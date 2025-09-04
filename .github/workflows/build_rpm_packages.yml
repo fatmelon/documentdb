@@ -35,7 +35,7 @@ jobs:
         ls -la ../../
     
     - name: Generate baseline for DocumentDB
-      working-directory: similaritychecker
+      # working-directory: similaritychecker
       run: |
         echo "Generating baseline for documentdb..."
         python3 .scripts/generate_baseline_treesitter.py ../documentdb documentdb_baseline.json --exclude "*/roaring_bitmaps/*" --fail-on-error
@@ -44,7 +44,7 @@ jobs:
         echo "Generated $(jq length documentdb_baseline.json) unique string patterns."
     
     - name: Generate baseline for MongoDB
-      working-directory: similaritychecker
+      # working-directory: similaritychecker
       run: |
         echo "Generating baseline for mongo..."
         python3 .scripts/generate_baseline_treesitter.py ../../mongo mongo_baseline.json
@@ -53,7 +53,7 @@ jobs:
         echo "Generated $(jq length mongo_baseline.json) unique string patterns."
     
     - name: Compare repositories using RapidFuzz
-      working-directory: similaritychecker
+      # working-directory: similaritychecker
       run: |
         echo "Comparing repositories using RapidFuzz..."
         python3 .scripts/rapidfuzz_file_compare.py \
