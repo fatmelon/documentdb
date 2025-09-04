@@ -46,7 +46,7 @@ jobs:
       # working-directory: similaritychecker
       run: |
         echo "Generating baseline for mongo..."
-        python3 scripts/generate_baseline_treesitter.py ../../mongo mongo_baseline.json
+        python3 scripts/generate_baseline_treesitter.py /home/runner/work/mongo mongo_baseline.json
         
         echo "mongo baseline generation completed."
         echo "Generated $(jq length mongo_baseline.json) unique string patterns."
@@ -74,8 +74,8 @@ jobs:
       with:
         name: similarity-analysis-baselines-${{ github.run_number }}
         path: |
-          similaritychecker/documentdb_baseline.json
-          similaritychecker/mongo_baseline.json
+          documentdb_baseline.json
+          mongo_baseline.json
         retention-days: 30
     
     - name: Upload comparison results
@@ -83,8 +83,8 @@ jobs:
       with:
         name: similarity-analysis-results-${{ github.run_number }}
         path: |
-          similaritychecker/*_matches_*pct_*.json
-          similaritychecker/*_unmatched_*pct_*.json
+          *_matches_*pct_*.json
+          *_unmatched_*pct_*.json
         retention-days: 30
     
     - name: Upload analysis logs
@@ -93,6 +93,6 @@ jobs:
       with:
         name: similarity-analysis-logs-${{ github.run_number }}
         path: |
-          similaritychecker/*.log
+          *.log
         retention-days: 7
         if-no-files-found: ignore
