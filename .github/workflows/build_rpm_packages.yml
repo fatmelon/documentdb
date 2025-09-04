@@ -1,98 +1,63 @@
-name: Repository Similarity Analysis
+name: Build RPM packages
+concurrency:
+  group: build-rpm-packages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 on:
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+  push:
+    branches:
+      - 'main'
+    paths-ignore:
+      - 'docs/**'
+      - '.devcontainer/**'
+      - '*.md'
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths-ignore:
+      - 'docs/**'
+      - '.devcontainer/**'
+      - '*.md'
+
 
 jobs:
-  similarity-analysis:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install tree-sitter tree-sitter-cpp rapidfuzz pybloom-live
-    
-    - name: Clone source and target repositories
-      run: |
-        echo "Cloning MongoDB repository..."
-        git clone --depth 1 https://github.com/mongodb/mongo ../../mongo
-        echo "mongo repository cloned."
+  build-rpm-packages:
+    runs-on: ${{ matrix.runner }}
+    name: RPM packages for ${{ matrix.os }}-${{ matrix.arch }}-pg${{ matrix.pg_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [rhel8, rhel9]
+        arch: [amd64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+        pg_version:
+          - 16
+          - 17
 
-        ls -la
-        ls -la ..
-        ls -la ../../
-        pwd
-    
-    - name: Generate baseline for DocumentDB
-      # working-directory: similaritychecker
-      run: |
-        echo "Generating baseline for documentdb..."
-        python3 scripts/generate_baseline_treesitter.py /home/runner/work/documentdb/documentdb documentdb_baseline.json --exclude "*/roaring_bitmaps/*" --fail-on-error
-        
-        echo "documentdb baseline generation completed."
-        echo "Generated $(jq length documentdb_baseline.json) unique string patterns."
-    
-    - name: Generate baseline for MongoDB
-      # working-directory: similaritychecker
-      run: |
-        echo "Generating baseline for mongo..."
-        python3 scripts/generate_baseline_treesitter.py /home/runner/work/mongo mongo_baseline.json
-        
-        echo "mongo baseline generation completed."
-        echo "Generated $(jq length mongo_baseline.json) unique string patterns."
-    
-    - name: Compare repositories using RapidFuzz
-      # working-directory: similaritychecker
-      run: |
-        echo "Comparing repositories using RapidFuzz..."
-        python3 scripts/rapidfuzz_file_compare.py \
-          documentdb_baseline.json \
-          mongo_baseline.json \
-          --threshold 70 \
-          --max-matches 10
-        
-        # Find the generated comparison files
-        MATCHES_FILE=$(ls *_matches_*pct_*.json | head -1)
-        UNMATCHED_FILE=$(ls *_unmatched_*pct_*.json | head -1)
-        
-        echo "Comparison completed."
-        echo "Matches file: $MATCHES_FILE"
-        echo "Unmatched file: $UNMATCHED_FILE"
-    
-    - name: Upload baseline files
-      uses: actions/upload-artifact@v4
-      with:
-        name: similarity-analysis-baselines-${{ github.run_number }}
-        path: |
-          documentdb_baseline.json
-          mongo_baseline.json
-        retention-days: 30
-    
-    - name: Upload comparison results
-      uses: actions/upload-artifact@v4
-      with:
-        name: similarity-analysis-results-${{ github.run_number }}
-        path: |
-          *_matches_*pct_*.json
-          *_unmatched_*pct_*.json
-        retention-days: 30
-    
-    - name: Upload analysis logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: similarity-analysis-logs-${{ github.run_number }}
-        path: |
-          *.log
-        retention-days: 7
-        if-no-files-found: ignore
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract and Format Default Version
+        id: extract_version
+        run: |
+          DOCUMENTDB_VERSION=$(grep -E "^default_version" pg_documentdb_core/documentdb_core.control | sed -E "s/.*'([0-9]+\.[0-9]+-[0-9]+)'.*/\1/")
+          DOCUMENTDB_VERSION=$(echo $DOCUMENTDB_VERSION | sed "s/-/./g")
+          echo "Extracted Version: $DOCUMENTDB_VERSION"
+          echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
+
+      - name: Build RPM Package
+        run: |
+          ./packaging/build_packages.sh --os ${{ matrix.os }} --pg ${{ matrix.pg_version }} --version ${{ env.DOCUMENTDB_VERSION }} --test-clean-install
+
+      - name: Upload RPM Package as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.DOCUMENTDB_VERSION }}
+          path: |
+            packaging/*.rpm
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
