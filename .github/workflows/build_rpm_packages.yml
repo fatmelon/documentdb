@@ -9,11 +9,11 @@ jobs:
     timeout-minutes: 60
     
     steps:
-    - name: Checkout similarity checker
-      uses: actions/checkout@v4
-      with:
-        path: similaritychecker
-        ref: v2
+    # - name: Checkout similarity checker
+    #   uses: actions/checkout@v4
+    #   with:
+    #     path: similaritychecker
+    #     ref: v2
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -28,7 +28,7 @@ jobs:
     - name: Clone source and target repositories
       run: |
         echo "Cloning MongoDB repository..."
-        git clone --depth 1 https://github.com/mongodb/mongo mongo
+        git clone --depth 1 https://github.com/mongodb/mongo ../../mongo
         echo "mongo repository cloned."
 
         ls -la ..
