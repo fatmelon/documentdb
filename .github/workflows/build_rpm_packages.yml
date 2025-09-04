@@ -27,10 +27,6 @@ jobs:
     
     - name: Clone source and target repositories
       run: |
-        # echo "Cloning DocumentDB repository..."
-        # git clone --depth 1 https://github.com/microsoft/documentdb documentdb
-        # echo "documentdb repository cloned."
-        
         echo "Cloning MongoDB repository..."
         git clone --depth 1 https://github.com/mongodb/mongo mongo
         echo "mongo repository cloned."
