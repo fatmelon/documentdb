@@ -9,11 +9,8 @@ jobs:
     timeout-minutes: 60
     
     steps:
-    # - name: Checkout similarity checker
-    #   uses: actions/checkout@v4
-    #   with:
-    #     path: similaritychecker
-    #     ref: v2
+    - name: Checkout code
+      uses: actions/checkout@v4
     
     - name: Set up Python
       uses: actions/setup-python@v4
