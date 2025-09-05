@@ -1,63 +1,144 @@
-name: Build RPM packages
-concurrency:
-  group: build-rpm-packages-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+name: Repository Similarity Analysis
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - 'main'
-    paths-ignore:
-      - 'docs/**'
-      - '.devcontainer/**'
-      - '*.md'
-  pull_request:
-    types: [opened, reopened, synchronize]
-    paths-ignore:
-      - 'docs/**'
-      - '.devcontainer/**'
-      - '*.md'
-
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      targetRepo:
+        description: 'Target repository URL'
+        required: true
+      sourceExcludes:
+        description: 'Exclude patterns for source repo (comma-separated, e.g., "*/test/*,*/build/*")'
+        required: false
+      targetExcludes:
+        description: 'Exclude patterns for target repo (comma-separated, e.g., "*/test/*,*/build/*")'
+        required: false
+      sourceFailOnError:
+        description: 'Fail workflow if source baseline generation encounters errors'
+        required: false
+        type: boolean
+        default: false
+      targetFailOnError:
+        description: 'Fail workflow if target baseline generation encounters errors'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  build-rpm-packages:
-    runs-on: ${{ matrix.runner }}
-    name: RPM packages for ${{ matrix.os }}-${{ matrix.arch }}-pg${{ matrix.pg_version }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [rhel8, rhel9]
-        arch: [amd64]
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-        pg_version:
-          - 16
-          - 17
-
+  similarity-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install tree-sitter tree-sitter-cpp rapidfuzz pybloom-live
+    
+    - name: Clone source and target repositories
+      run: |
+        echo "Cloning target repository..."
+        git clone --depth 1 ${{ github.event.inputs.targetRepo }} ../../target
+        echo "Target repository cloned."
+    
+    - name: Generate baseline for source repository
+      run: |
+        echo "Generating baseline for source repository..."
+        
+        # Build exclude arguments from comma-separated input
+        EXCLUDE_ARGS=""
+        if [ -n "${{ github.event.inputs.sourceExcludes }}" ]; then
+          IFS=',' read -ra EXCLUDES <<< "${{ github.event.inputs.sourceExcludes }}"
+          for exclude in "${EXCLUDES[@]}"; do
+            EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude \"$exclude\""
+          done
+        fi
+        
+        # Add fail-on-error flag if enabled
+        FAIL_ON_ERROR=""
+        if [ "${{ github.event.inputs.sourceFailOnError }}" == "true" ]; then
+          FAIL_ON_ERROR="--fail-on-error"
+        fi
+        
+        # Run the baseline generation with exclude arguments
+        eval "python3 generate_baseline_treesitter.py /home/runner/work/documentdb/documentdb source_baseline.json $EXCLUDE_ARGS $FAIL_ON_ERROR"
+        
+        echo "Source baseline generation completed."
+        echo "Generated $(jq length source_baseline.json) unique string patterns."
+    
+    - name: Generate baseline for target repository
+      run: |
+        echo "Generating baseline for target repository..."
+        
+        # Build exclude arguments from comma-separated input
+        EXCLUDE_ARGS=""
+        if [ -n "${{ github.event.inputs.targetExcludes }}" ]; then
+          IFS=',' read -ra EXCLUDES <<< "${{ github.event.inputs.targetExcludes }}"
+          for exclude in "${EXCLUDES[@]}"; do
+            EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude \"$exclude\""
+          done
+        fi
+        
+        # Add fail-on-error flag if enabled
+        FAIL_ON_ERROR=""
+        if [ "${{ github.event.inputs.targetFailOnError }}" == "true" ]; then
+          FAIL_ON_ERROR="--fail-on-error"
+        fi
+        
+        # Run the baseline generation with exclude arguments
+        eval "python3 generate_baseline_treesitter.py /home/runner/work/target target_baseline.json $EXCLUDE_ARGS $FAIL_ON_ERROR"
 
-      - name: Extract and Format Default Version
-        id: extract_version
-        run: |
-          DOCUMENTDB_VERSION=$(grep -E "^default_version" pg_documentdb_core/documentdb_core.control | sed -E "s/.*'([0-9]+\.[0-9]+-[0-9]+)'.*/\1/")
-          DOCUMENTDB_VERSION=$(echo $DOCUMENTDB_VERSION | sed "s/-/./g")
-          echo "Extracted Version: $DOCUMENTDB_VERSION"
-          echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
-
-      - name: Build RPM Package
-        run: |
-          ./packaging/build_packages.sh --os ${{ matrix.os }} --pg ${{ matrix.pg_version }} --version ${{ env.DOCUMENTDB_VERSION }} --test-clean-install
-
-      - name: Upload RPM Package as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.os }}-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.DOCUMENTDB_VERSION }}
-          path: |
-            packaging/*.rpm
-          retention-days: 7
-          if-no-files-found: error
-          compression-level: 0
+        echo "Target baseline generation completed."
+        echo "Generated $(jq length target_baseline.json) unique string patterns."
+    
+    - name: Compare repositories using RapidFuzz
+      run: |
+        echo "Comparing repositories using RapidFuzz..."
+        python3 scripts/rapidfuzz_file_compare.py \
+          source_baseline.json \
+          target_baseline.json \
+          --threshold 70 \
+          --max-matches 10
+        
+        # Find the generated comparison files
+        MATCHES_FILE=$(ls *_matches_*pct_*.json | head -1)
+        UNMATCHED_FILE=$(ls *_unmatched_*pct_*.json | head -1)
+        
+        echo "Comparison completed."
+        echo "Matches file: $MATCHES_FILE"
+        echo "Unmatched file: $UNMATCHED_FILE"
+    
+    - name: Upload baseline files
+      uses: actions/upload-artifact@v4
+      with:
+        name: similarity-analysis-baselines-${{ github.run_number }}
+        path: |
+          source_baseline.json
+          target_baseline.json
+        retention-days: 30
+    
+    - name: Upload comparison results
+      uses: actions/upload-artifact@v4
+      with:
+        name: similarity-analysis-results-${{ github.run_number }}
+        path: |
+          *_matches_*pct_*.json
+          *_unmatched_*pct_*.json
+        retention-days: 30
+    
+    - name: Upload analysis logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: similarity-analysis-logs-${{ github.run_number }}
+        path: |
+          *.log
+        retention-days: 7
+        if-no-files-found: ignore
