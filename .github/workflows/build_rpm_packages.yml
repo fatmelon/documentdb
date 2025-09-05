@@ -68,7 +68,7 @@ jobs:
         fi
         
         # Run the baseline generation with exclude arguments
-        eval "python3 generate_baseline_treesitter.py /home/runner/work/documentdb/documentdb source_baseline.json $EXCLUDE_ARGS $FAIL_ON_ERROR"
+        eval "python3 tools/SimilarityChecker/generate_baseline_treesitter.py /home/runner/work/documentdb/documentdb source_baseline.json $EXCLUDE_ARGS $FAIL_ON_ERROR"
         
         echo "Source baseline generation completed."
         echo "Generated $(jq length source_baseline.json) unique string patterns."
@@ -93,7 +93,7 @@ jobs:
         fi
         
         # Run the baseline generation with exclude arguments
-        eval "python3 generate_baseline_treesitter.py /home/runner/work/target target_baseline.json $EXCLUDE_ARGS $FAIL_ON_ERROR"
+        eval "python3 tools/SimilarityChecker/generate_baseline_treesitter.py /home/runner/work/target target_baseline.json $EXCLUDE_ARGS $FAIL_ON_ERROR"
 
         echo "Target baseline generation completed."
         echo "Generated $(jq length target_baseline.json) unique string patterns."
@@ -101,7 +101,7 @@ jobs:
     - name: Compare repositories using RapidFuzz
       run: |
         echo "Comparing repositories using RapidFuzz..."
-        python3 scripts/rapidfuzz_file_compare.py \
+        python3 tools/SimilarityChecker/rapidfuzz_file_compare.py \
           source_baseline.json \
           target_baseline.json \
           --threshold 70 \
