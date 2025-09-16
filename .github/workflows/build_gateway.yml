@@ -52,7 +52,7 @@ jobs:
     - name: Build and Push ${{ matrix.arch }} Image
       run: |
         TAG=${{ env.IMAGE_TAG }}-${{ matrix.arch }}
-        docker build \
+        docker buildx build \
           --build-arg BASE_ARCH=${{ matrix.base_arch }} \
           --build-arg BASE_VERSION=${{ env.BASE_VERSION }} \
           --sbom=true --provenance=true \
