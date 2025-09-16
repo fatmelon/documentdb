@@ -60,10 +60,9 @@ jobs:
           --build-arg BASE_ARCH=${{ matrix.base_arch }} \
           --build-arg BASE_VERSION=${{ env.BASE_VERSION }} \
           --sbom=true --provenance=true \
+          --push \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
-          -f .github/containers/Build-Ubuntu/Dockerfile_gateway \
-          --push \  
-          . 
+          -f .github/containers/Build-Ubuntu/Dockerfile_gateway .
 
   create-manifest:
     name: Create, Push, Sign & Verify Manifest
