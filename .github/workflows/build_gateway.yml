@@ -59,6 +59,7 @@ jobs:
         docker buildx build \
           --build-arg BASE_ARCH=${{ matrix.base_arch }} \
           --build-arg BASE_VERSION=${{ env.BASE_VERSION }} \
+          --platform linux/${{ matrix.arch }} \
           --sbom=true --provenance=true \
           --push \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
