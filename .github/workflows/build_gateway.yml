@@ -55,6 +55,7 @@ jobs:
         docker build \
           --build-arg BASE_ARCH=${{ matrix.base_arch }} \
           --build-arg BASE_VERSION=${{ env.BASE_VERSION }} \
+          --sbom=true --provenance=true \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
           -f .github/containers/Build-Ubuntu/Dockerfile_gateway .
         docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
