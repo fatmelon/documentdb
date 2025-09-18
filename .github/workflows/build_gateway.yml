@@ -58,6 +58,12 @@ jobs:
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
           -f .github/containers/Build-Ubuntu/Dockerfile_gateway .
         docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
+    - uses: actions/download-artifact@v5
+      with:
+        name: archive-deb11-amd64-pg16-documentdb-0.108.0
+        github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
+        repository: fatmelon/documentdb
+        run-id: 17757129411
 
   create-manifest:
     name: Create, Push, Sign & Verify Manifest
