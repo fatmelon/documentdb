@@ -71,23 +71,22 @@ bool EnableVectorCalculateDefaultSearchParameter =
  * SECTION: Indexing feature flags
  */
 
-#define DEFAULT_ENABLE_NEW_COMPOSITE_INDEX_OPCLASS true
-bool EnableNewCompositeIndexOpclass = DEFAULT_ENABLE_NEW_COMPOSITE_INDEX_OPCLASS;
-
 #define DEFAULT_USE_NEW_COMPOSITE_INDEX_OPCLASS false
 bool DefaultUseCompositeOpClass = DEFAULT_USE_NEW_COMPOSITE_INDEX_OPCLASS;
 
 #define DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN false
 bool EnableIndexOrderbyPushdown = DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN;
 
+/* Remove after v109 */
 #define DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY false
 bool EnableIndexOrderbyPushdownLegacy = DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY;
 
-#define DEFAULT_ENABLE_DESCENDING_COMPOSITE_INDEX true
-bool EnableDescendingCompositeIndex = DEFAULT_ENABLE_DESCENDING_COMPOSITE_INDEX;
+#define DEFAULT_ENABLE_INDEX_ONLY_SCAN false
+bool EnableIndexOnlyScan = DEFAULT_ENABLE_INDEX_ONLY_SCAN;
 
-#define DEFAULT_ENABLE_COMPOSITE_UNIQUE_INDEX true
-bool EnableCompositeUniqueIndex = DEFAULT_ENABLE_COMPOSITE_UNIQUE_INDEX;
+/* Remove after v109 */
+#define DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE false
+bool EnableRangeOptimizationForComposite = DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE;
 
 /*
  * SECTION: Planner feature flags
@@ -99,7 +98,6 @@ bool EnableNewOperatorSelectivityMode = DEFAULT_ENABLE_NEW_OPERATOR_SELECTIVITY;
 bool DisableDollarSupportFuncSelectivity = DEFAULT_DISABLE_DOLLAR_FUNCTION_SELECTIVITY;
 
 /* Remove after v109 */
-
 #define DEFAULT_LOOKUP_ENABLE_INNER_JOIN true
 bool EnableLookupInnerJoin = DEFAULT_LOOKUP_ENABLE_INNER_JOIN;
 
@@ -136,6 +134,7 @@ bool EnablePrimaryKeyCursorScan = DEFAULT_ENABLE_PRIMARY_KEY_CURSOR_SCAN;
 #define DEFAULT_USE_FILE_BASED_PERSISTED_CURSORS false
 bool UseFileBasedPersistedCursors = DEFAULT_USE_FILE_BASED_PERSISTED_CURSORS;
 
+/* Remove after v108 */
 #define DEFAULT_USE_LEGACY_NULL_EQUALITY_BEHAVIOR false
 bool UseLegacyNullEqualityBehavior = DEFAULT_USE_LEGACY_NULL_EQUALITY_BEHAVIOR;
 
@@ -146,6 +145,10 @@ bool EnableIndexHintSupport = DEFAULT_ENABLE_INDEX_HINT_SUPPORT;
 /* Remove after v109 */
 #define DEFAULT_USE_LEGACY_FORCE_PUSHDOWN_BEHAVIOR false
 bool UseLegacyForcePushdownBehavior = DEFAULT_USE_LEGACY_FORCE_PUSHDOWN_BEHAVIOR;
+
+/* Remove after v109 */
+#define DEFAULT_ENABLE_DELAYED_HOLD_PORTAL true
+bool EnableDelayedHoldPortal = DEFAULT_ENABLE_DELAYED_HOLD_PORTAL;
 
 
 /*
@@ -172,6 +175,15 @@ bool EnableLookupIdJoinOptimizationOnCollation =
 
 
 /*
+ * SECTION: DML Write Path feature flags
+ */
+
+/* Remove after v109 */
+#define DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE false
+bool UseLegacyShardKeyFilterOnUpdate = DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE;
+
+
+/*
  * SECTION: Cluster administration & DDL feature flags
  */
 #define DEFAULT_RECREATE_RETRY_TABLE_ON_SHARDING false
@@ -194,12 +206,6 @@ bool EnableCompact = DEFAULT_ENABLE_COMPACT_COMMAND;
 
 #define DEFAULT_ENABLE_SCHEMA_ENFORCEMENT_FOR_CSFLE true
 bool EnableSchemaEnforcementForCSFLE = DEFAULT_ENABLE_SCHEMA_ENFORCEMENT_FOR_CSFLE;
-
-#define DEFAULT_ENABLE_INDEX_ONLY_SCAN false
-bool EnableIndexOnlyScan = DEFAULT_ENABLE_INDEX_ONLY_SCAN;
-
-#define DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE false
-bool EnableRangeOptimizationForComposite = DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE;
 
 #define DEFAULT_USE_PG_STATS_LIVE_TUPLES_FOR_COUNT true
 bool UsePgStatsLiveTuplesForCount = DEFAULT_USE_PG_STATS_LIVE_TUPLES_FOR_COUNT;
@@ -476,13 +482,6 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
-		psprintf("%s.enableNewCompositeIndexOpClass", newGucPrefix),
-		gettext_noop(
-			"Whether to enable the new experimental composite index opclass"),
-		NULL, &EnableNewCompositeIndexOpclass, DEFAULT_ENABLE_NEW_COMPOSITE_INDEX_OPCLASS,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
 		psprintf("%s.defaultUseCompositeOpClass", newGucPrefix),
 		gettext_noop(
 			"Whether to enable the new experimental composite index opclass for default index creates"),
@@ -502,20 +501,6 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 			"Whether to enable the prior index sort on the new experimental composite index opclass"),
 		NULL, &EnableIndexOrderbyPushdownLegacy,
 		DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
-		psprintf("%s.enableDescendingCompositeIndex", newGucPrefix),
-		gettext_noop(
-			"Whether to enable descending composite index support"),
-		NULL, &EnableDescendingCompositeIndex, DEFAULT_ENABLE_DESCENDING_COMPOSITE_INDEX,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
-		psprintf("%s.enableCompositeUniqueIndex", newGucPrefix),
-		gettext_noop(
-			"Whether to enable composite unique index support"),
-		NULL, &EnableCompositeUniqueIndex, DEFAULT_ENABLE_COMPOSITE_UNIQUE_INDEX,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
@@ -575,5 +560,20 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 			"Whether to use pg_stat_all_tables live tuples for count in collStats."),
 		NULL, &UsePgStatsLiveTuplesForCount,
 		DEFAULT_USE_PG_STATS_LIVE_TUPLES_FOR_COUNT,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.useLegacyShardKeyFilterOnUpdate", newGucPrefix),
+		gettext_noop(
+			"Whether or not to use the older style shard key filter on update calls."),
+		NULL, &UseLegacyShardKeyFilterOnUpdate,
+		DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableDelayedHoldPortal", newGucPrefix),
+		gettext_noop(
+			"Whether to delay holding the portal until we know there is more data to be fetched."),
+		NULL, &EnableDelayedHoldPortal, DEFAULT_ENABLE_DELAYED_HOLD_PORTAL,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 }

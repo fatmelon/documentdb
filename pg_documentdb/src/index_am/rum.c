@@ -22,6 +22,11 @@
 #include <commands/explain.h>
 #include <access/gin.h>
 
+#if PG_VERSION_NUM >= 180000
+#include <commands/explain_state.h>
+#include <commands/explain_format.h>
+#endif
+
 #include "api_hooks.h"
 #include "planner/mongo_query_operator.h"
 #include "opclass/bson_gin_index_mgmt.h"
@@ -34,9 +39,7 @@
 #include "utils/documentdb_errors.h"
 
 extern bool ForceUseIndexIfAvailable;
-extern bool EnableNewCompositeIndexOpclass;
 extern bool EnableIndexOrderbyPushdown;
-extern bool EnableDescendingCompositeIndex;
 extern bool EnableIndexOnlyScan;
 extern bool EnableIndexOrderbyPushdownLegacy;
 extern const RumIndexArrayStateFuncs RoaringStateFuncs;
@@ -117,8 +120,15 @@ static bool extension_ruminsert(Relation indexRelation,
 								struct IndexInfo *indexInfo);
 
 static bool RumScanOrderedFalse(IndexScanDesc scan);
-
 static CanOrderInIndexScan rum_index_scan_ordered = RumScanOrderedFalse;
+
+static Datum (*rum_extract_tsquery_func)(PG_FUNCTION_ARGS) = NULL;
+static Datum (*rum_tsquery_consistent_func)(PG_FUNCTION_ARGS) = NULL;
+static Datum (*rum_tsvector_config_func)(PG_FUNCTION_ARGS) = NULL;
+static Datum (*rum_tsquery_pre_consistent_func)(PG_FUNCTION_ARGS) = NULL;
+static Datum (*rum_tsquery_distance_func)(PG_FUNCTION_ARGS) = NULL;
+static Datum (*rum_ts_join_pos_func)(PG_FUNCTION_ARGS) = NULL;
+static Datum (*rum_extract_tsvector_func)(PG_FUNCTION_ARGS) = NULL;
 
 inline static void
 EnsureRumLibLoaded(void)
@@ -135,6 +145,14 @@ EnsureRumLibLoaded(void)
 /* Top level exports */
 /* --------------------------------------------------------- */
 PG_FUNCTION_INFO_V1(extensionrumhandler);
+PG_FUNCTION_INFO_V1(documentdb_rum_extract_tsquery);
+PG_FUNCTION_INFO_V1(documentdb_rum_tsquery_consistent);
+PG_FUNCTION_INFO_V1(documentdb_rum_tsvector_config);
+PG_FUNCTION_INFO_V1(documentdb_rum_tsquery_pre_consistent);
+PG_FUNCTION_INFO_V1(documentdb_rum_tsquery_distance);
+PG_FUNCTION_INFO_V1(documentdb_rum_ts_join_pos);
+PG_FUNCTION_INFO_V1(documentdb_rum_extract_tsvector);
+
 
 /*
  * Register the access method for RUM as a custom index handler.
@@ -149,6 +167,62 @@ extensionrumhandler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *indexRoutine = GetRumIndexHandler(fcinfo);
 	PG_RETURN_POINTER(indexRoutine);
+}
+
+
+Datum
+documentdb_rum_extract_tsquery(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_extract_tsquery_func(fcinfo);
+}
+
+
+Datum
+documentdb_rum_tsquery_consistent(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_tsquery_consistent_func(fcinfo);
+}
+
+
+Datum
+documentdb_rum_tsvector_config(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_tsvector_config_func(fcinfo);
+}
+
+
+Datum
+documentdb_rum_tsquery_pre_consistent(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_tsquery_pre_consistent_func(fcinfo);
+}
+
+
+Datum
+documentdb_rum_tsquery_distance(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_tsquery_distance_func(fcinfo);
+}
+
+
+Datum
+documentdb_rum_ts_join_pos(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_ts_join_pos_func(fcinfo);
+}
+
+
+Datum
+documentdb_rum_extract_tsvector(PG_FUNCTION_ARGS)
+{
+	EnsureRumLibLoaded();
+	return rum_extract_tsvector_func(fcinfo);
 }
 
 
@@ -290,6 +364,29 @@ LoadRumRoutine(void)
 	Datum rumHandlerDatum = rumhandler(fcinfo);
 	IndexAmRoutine *indexRoutine = (IndexAmRoutine *) DatumGetPointer(rumHandlerDatum);
 	rum_index_routine = *indexRoutine;
+
+	/* Load required C functions */
+	rum_extract_tsquery_func =
+		load_external_function(rumLibPath, "rum_extract_tsquery", !missingOk,
+							   ignoreLibFileHandle);
+	rum_tsquery_consistent_func =
+		load_external_function(rumLibPath, "rum_tsquery_consistent", !missingOk,
+							   ignoreLibFileHandle);
+	rum_tsvector_config_func =
+		load_external_function(rumLibPath, "rum_tsvector_config", !missingOk,
+							   ignoreLibFileHandle);
+	rum_tsquery_pre_consistent_func =
+		load_external_function(rumLibPath, "rum_tsquery_pre_consistent", !missingOk,
+							   ignoreLibFileHandle);
+	rum_tsquery_distance_func =
+		load_external_function(rumLibPath, "rum_tsquery_distance", !missingOk,
+							   ignoreLibFileHandle);
+	rum_ts_join_pos_func =
+		load_external_function(rumLibPath, "rum_ts_join_pos", !missingOk,
+							   ignoreLibFileHandle);
+	rum_extract_tsvector_func =
+		load_external_function(rumLibPath, "rum_extract_tsvector", !missingOk,
+							   ignoreLibFileHandle);
 
 	/* Load optional explain function */
 	missingOk = true;
@@ -475,8 +572,8 @@ CompositeIndexSupportsOrderByPushdown(IndexPath *indexPath, List *sortDetails,
 		int32_t sortBtreeStrategy = sortDirection < 0 ? BTGreaterStrategyNumber :
 									BTLessStrategyNumber;
 
-		bool currentPathKeyIsReverseSort = sortDetailsInput->sortPathKey->pk_strategy !=
-										   sortBtreeStrategy;
+		bool currentPathKeyIsReverseSort = (int32_t) SortPathKeyStrategy(
+			sortDetailsInput->sortPathKey) != sortBtreeStrategy;
 		if (currentPathKeyIsReverseSort)
 		{
 			if (!indexSupportsOrderByDesc)
@@ -502,12 +599,6 @@ CompositeIndexSupportsOrderByPushdown(IndexPath *indexPath, List *sortDetails,
 			}
 
 			hasForwardSortOrder = true;
-		}
-
-		if (sortBtreeStrategy == BTGreaterStrategyNumber &&
-			!EnableDescendingCompositeIndex)
-		{
-			break;
 		}
 
 		if (maxOrderbyColumn < 0)
@@ -864,11 +955,6 @@ static IndexScanDesc
 extension_rumbeginscan(Relation rel, int nkeys, int norderbys)
 {
 	EnsureRumLibLoaded();
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		return rum_index_routine.ambeginscan(rel, nkeys, norderbys);
-	}
-
 	return extension_rumbeginscan_core(rel, nkeys, norderbys,
 									   &rum_index_routine);
 }
@@ -901,13 +987,6 @@ static void
 extension_rumendscan(IndexScanDesc scan)
 {
 	EnsureRumLibLoaded();
-
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		rum_index_routine.amendscan(scan);
-		return;
-	}
-
 	extension_rumendscan_core(scan, &rum_index_routine);
 }
 
@@ -938,12 +1017,6 @@ extension_rumrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 					ScanKey orderbys, int norderbys)
 {
 	EnsureRumLibLoaded();
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		rum_index_routine.amrescan(scan, scankey, nscankeys, orderbys, norderbys);
-		return;
-	}
-
 	extension_rumrescan_core(scan, scankey, nscankeys,
 							 orderbys, norderbys, &rum_index_routine,
 							 RumGetMultikeyStatus, rum_index_scan_ordered);
@@ -1064,11 +1137,6 @@ static int64
 extension_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	EnsureRumLibLoaded();
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		return rum_index_routine.amgetbitmap(scan, tbm);
-	}
-
 	return extension_rumgetbitmap_core(scan, tbm, &rum_index_routine);
 }
 
@@ -1094,11 +1162,6 @@ static bool
 extension_amgettuple(IndexScanDesc scan, ScanDirection direction)
 {
 	EnsureRumLibLoaded();
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		return rum_index_routine.amgettuple(scan, direction);
-	}
-
 	return extension_rumgettuple_core(scan, direction, &rum_index_routine);
 }
 
@@ -1189,11 +1252,6 @@ extension_rumbuild(Relation heapRelation,
 {
 	EnsureRumLibLoaded();
 
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		return rum_index_routine.ambuild(heapRelation, indexRelation, indexInfo);
-	}
-
 	bool amCanBuildParallel = true;
 	return extension_rumbuild_core(heapRelation, indexRelation,
 								   indexInfo, &rum_index_routine,
@@ -1244,13 +1302,6 @@ extension_ruminsert(Relation indexRelation,
 					struct IndexInfo *indexInfo)
 {
 	EnsureRumLibLoaded();
-
-	if (!EnableNewCompositeIndexOpclass)
-	{
-		return rum_index_routine.aminsert(indexRelation, values, isnull,
-										  heap_tid, heapRelation, checkUnique,
-										  indexUnchanged, indexInfo);
-	}
 
 	return extension_ruminsert_core(indexRelation, values, isnull,
 									heap_tid, heapRelation, checkUnique,

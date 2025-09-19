@@ -279,8 +279,7 @@ DocumentDBBackgroundWorkerMain(Datum main_arg)
 		}
 
 		waitResult = WaitLatch(&BackgroundWorkerShmem->latch,
-							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH |
-							   WL_POSTMASTER_DEATH,
+							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 							   latchTimeOut * ONE_SEC_IN_MS,
 							   WAIT_EVENT_PG_SLEEP);
 		ResetLatch(&BackgroundWorkerShmem->latch);
@@ -288,7 +287,11 @@ DocumentDBBackgroundWorkerMain(Datum main_arg)
 		/* An interrupt might have taken place during the waiting process. */
 		CHECK_FOR_INTERRUPTS();
 
+#if PG_VERSION_NUM >= 180000
+		ProcessMainLoopInterrupts();
+#else
 		HandleMainLoopInterrupts();
+#endif
 
 		if (waitResult & WL_LATCH_SET)
 		{
@@ -498,8 +501,7 @@ WaitForBackgroundWorkerDependencies(void)
 	{
 		waitResult = 0;
 		waitResult = WaitLatch(&BackgroundWorkerShmem->latch,
-							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH |
-							   WL_POSTMASTER_DEATH,
+							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 							   waitTimeoutInSec * ONE_SEC_IN_MS,
 							   WAIT_EVENT_PG_SLEEP);
 		ResetLatch(&BackgroundWorkerShmem->latch);
@@ -507,7 +509,11 @@ WaitForBackgroundWorkerDependencies(void)
 		/* An interrupt might have taken place during the waiting process. */
 		CHECK_FOR_INTERRUPTS();
 
+#if PG_VERSION_NUM >= 180000
+		ProcessMainLoopInterrupts();
+#else
 		HandleMainLoopInterrupts();
+#endif
 
 		if (waitResult & WL_TIMEOUT)
 		{
