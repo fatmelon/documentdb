@@ -62,8 +62,9 @@ jobs:
         path: ./downloaded-artifacts/
     - name: Unzip artifact
       run: |
+        ls -R ./downloaded-artifacts/ || true
         unzip ./downloaded-artifacts/archive-deb13-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.BASE_VERSION }}.zip -d ./extracted-content/
-        ls -la ./extracted-content/
+        ls -R ./extracted-content/
     - name: Login to GHCR
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
     - name: Build and Push ${{ matrix.arch }} Image
