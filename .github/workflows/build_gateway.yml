@@ -3,6 +3,9 @@ name: Gateway Image - Build and Push to GHCR (Native AMD64 and ARM64)
 on:
   workflow_dispatch:
     inputs:
+      packages_run_id:
+        description: 'Run ID of the build_packages workflow to download the Debian package from'
+        required: true
       manifest_tag:
         description: 'Tag for the Docker manifest'
         required: false
@@ -40,6 +43,9 @@ jobs:
           - arch: arm64
             base_arch: ARM64
             runner: ubuntu-22.04-arm
+        pg_version:
+          - 16
+          - 17
     runs-on: ${{ matrix.runner }}
     steps:
     - name: Checkout code
@@ -47,26 +53,37 @@ jobs:
     - name: Set Default Values
       run: |
         echo "BASE_VERSION=${{ github.event.inputs.base_version || env.DEFAULT_BASE_VERSION }}" >> $GITHUB_ENV
+    - uses: actions/download-artifact@v5
+      with:
+        name: archive-deb13-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.BASE_VERSION }}
+        github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
+        repository: fatmelon/documentdb
+        run-id: ${{ github.event.inputs.packages_run_id }}
+    - name: Unzip artifact
+      run: |
+        unzip ./downloaded-artifacts/archive-deb13-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.BASE_VERSION }}.zip -d ./extracted-content/
+        ls -la ./extracted-content/
     - name: Login to GHCR
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
     - name: Build and Push ${{ matrix.arch }} Image
       run: |
-        TAG=${{ env.IMAGE_TAG }}-${{ matrix.arch }}
+        TAG=${{ env.IMAGE_TAG }}-${{ matrix.pg_version }}-${{ matrix.arch }}
         docker build \
-          --build-arg BASE_ARCH=${{ matrix.base_arch }} \
-          --build-arg BASE_VERSION=${{ env.BASE_VERSION }} \
+          --platform linux/${{ matrix.arch }} \
+          --build-arg BASE_IMAGE=debian:trixie-slim \
+          --build-arg POSTGRES_VERSION=${{ matrix.pg_version }} \
+          --build-arg DEB_PACKAGE_REL_PATH=./extracted-content/deb13-postgresql-${{ matrix.pg_version }}-documentdb_${{ env.BASE_VERSION }}_${{ matrix.arch }}.deb \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
-          -f .github/containers/Build-Ubuntu/Dockerfile_gateway .
+          -f .github/containers/Build-Ubuntu/Dockerfile_combined .
         docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
-    - uses: actions/download-artifact@v5
-      with:
-        name: archive-deb11-amd64-pg16-documentdb-0.108.0
-        github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
-        repository: fatmelon/documentdb
-        run-id: 17757129411
-
+    
   create-manifest:
     name: Create, Push, Sign & Verify Manifest
+    strategy:
+      matrix:
+        pg_version:
+          - 16
+          - 17
     runs-on: ubuntu-22.04
     needs: build-and-push
     steps:
@@ -74,12 +91,12 @@ jobs:
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
     - name: Set Default Values
       run: |
-        echo "MANIFEST_TAG=${{ github.event.inputs.manifest_tag || env.DEFAULT_MANIFEST_TAG }}" >> $GITHUB_ENV
+        echo "MANIFEST_TAG=${{ github.event.inputs.manifest_tag || env.DEFAULT_MANIFEST_TAG }}-${{ matrix.pg_version }}" >> $GITHUB_ENV
     - name: Create and Push Manifest
       run: |
         docker manifest create ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.MANIFEST_TAG }} \
-          --amend ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-amd64 \
-          --amend ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-arm64
+          --amend ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-${{ matrix.pg_version }}-amd64 \
+          --amend ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-${{ matrix.pg_version }}-arm64
         docker manifest push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.MANIFEST_TAG }}
     - name: Install cosign
       uses: sigstore/cosign-installer@main
