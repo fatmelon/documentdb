@@ -71,8 +71,8 @@ jobs:
         echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
     - name: Build Debian Package
       run: |
-        ./packaging/build_packages.sh --os deb13 --pg ${{ matrix.pg_version }} --version ${{ env.DOCUMENTDB_VERSION }} --output-dir ./downloaded-artifacts/
-        ls -R ./downloaded-artifacts/
+        ./packaging/build_packages.sh --os deb13 --pg ${{ matrix.pg_version }} --version ${{ env.DOCUMENTDB_VERSION }} --output-dir downloaded-artifacts
+        ls -R downloaded-artifacts
     - name: Login to GHCR
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
     - name: Build and Push ${{ matrix.arch }} Image
@@ -82,7 +82,7 @@ jobs:
           --platform linux/${{ matrix.arch }} \
           --build-arg BASE_IMAGE=debian:trixie-slim \
           --build-arg POSTGRES_VERSION=${{ matrix.pg_version }} \
-          --build-arg DEB_PACKAGE_REL_PATH=./downloaded-artifacts/deb13-postgresql-${{ matrix.pg_version }}-documentdb_${{ env.DOCUMENTDB_VERSION }}_${{ matrix.arch }}.deb \
+          --build-arg DEB_PACKAGE_REL_PATH=downloaded-artifacts/deb13-postgresql-${{ matrix.pg_version }}-documentdb_${{ env.DOCUMENTDB_VERSION }}_${{ matrix.arch }}.deb \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
           -f .github/containers/Build-Ubuntu/Dockerfile_combined .
         docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
