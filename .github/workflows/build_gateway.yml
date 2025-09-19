@@ -59,6 +59,7 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
         repository: fatmelon/documentdb
         run-id: ${{ github.event.inputs.packages_run_id }}
+        path: ./downloaded-artifacts/
     - name: Unzip artifact
       run: |
         unzip ./downloaded-artifacts/archive-deb13-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.BASE_VERSION }}.zip -d ./extracted-content/
