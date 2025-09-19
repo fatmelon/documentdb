@@ -82,7 +82,7 @@ jobs:
           --platform linux/${{ matrix.arch }} \
           --build-arg BASE_IMAGE=debian:trixie-slim \
           --build-arg POSTGRES_VERSION=${{ matrix.pg_version }} \
-          --build-arg DEB_PACKAGE_REL_PATH=downloaded-artifacts/deb13-postgresql-${{ matrix.pg_version }}-documentdb_${{ env.DOCUMENTDB_VERSION }}_${{ matrix.arch }}.deb \
+          --build-arg DEB_PACKAGE_REL_PATH=$(ls downloaded-artifacts | grep -v 'dbgsym')  \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
           -f .github/containers/Build-Ubuntu/Dockerfile_combined .
         docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
