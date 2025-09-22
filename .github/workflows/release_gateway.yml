@@ -21,6 +21,11 @@ env:
 
 jobs:
   copy-and-push-manifest:
+    strategy:
+      matrix:
+        pg_version:
+          - 16
+          - 17
     runs-on: ubuntu-latest
     steps:
       - name: Login to GHCR
@@ -32,5 +37,15 @@ jobs:
           TARGET_TAG: ${{ github.event.inputs.target_tag }}
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/${{ github.repository }}/${{ env.REPO_NAME }}:${{ env.TARGET_TAG }} \
-            ghcr.io/${{ github.repository }}/${{ env.REPO_NAME }}:${{ env.SOURCE_TAG }}
+            -t ghcr.io/${{ github.repository }}/${{ env.REPO_NAME }}:${{ matrix.pg_version }} \
+            ghcr.io/${{ github.repository }}/${{ env.REPO_NAME }}:${{ env.SOURCE_TAG }}-${{ matrix.pg_version }}
+
+      - name: Retag existing manifest (latest)
+        if: ${{ matrix.pg_version == '17' }}
+        env:
+          SOURCE_TAG: ${{ github.event.inputs.source_tag }}
+          TARGET_TAG: ${{ github.event.inputs.target_tag }}
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ github.repository }}/${{ env.REPO_NAME }}:latest \
+            ghcr.io/${{ github.repository }}/${{ env.REPO_NAME }}:${{ env.SOURCE_TAG }}-17
