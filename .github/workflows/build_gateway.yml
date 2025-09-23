@@ -104,6 +104,8 @@ jobs:
     steps:
     - name: Login to GHCR
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+    - name: Show version
+      run: echo "Using DOCUMENTDB_VERSION=${{ needs.prepare.outputs.documentdb_version }}"
     - name: Set Default Values
       run: |
         # DOCUMENTDB_VERSION=$(grep -E "^default_version" pg_documentdb_core/documentdb_core.control | sed -E "s/.*'([0-9]+\.[0-9]+-[0-9]+)'.*/\1/")
