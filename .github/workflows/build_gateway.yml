@@ -3,20 +3,18 @@ name: Gateway Image - Build and Push to GHCR (Native AMD64 and ARM64)
 on:
   workflow_dispatch:
     inputs:
-      # packages_run_id:
-      #   description: 'Run ID of the build_packages workflow to download the Debian package from'
-      #   required: true
-      manifest_tag:
-        description: 'Tag for the Docker manifest'
+      push_images:
+        description: 'if true, push images to GHCR (default: false) otherwise only build'
+        default: true
         required: false
-      # base_version:
-      #   description: 'Base version for the Docker image'
-      #   required: false
 
   push:
     branches:
       - 'main'
+      - 'release/**'
     paths-ignore:
+      - 'docs/**'
+      - '.devcontainer/**'
       - '*.md'
 
 permissions:
@@ -25,7 +23,6 @@ permissions:
   id-token: write
 
 env:
-  # DEFAULT_BASE_VERSION: '0.104.0'
   DEFAULT_MANIFEST_TAG: 'test'
   IMAGE_NAME: documentdb-local
   IMAGE_TAG: ${{ github.run_id }}-$(date +'%Y-%m-%d')
@@ -53,18 +50,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    # - name: Set Default Values
-    #   run: |
-    #     echo "BASE_VERSION=${{ github.event.inputs.base_version || env.DEFAULT_BASE_VERSION }}" >> $GITHUB_ENV
-    # - uses: actions/download-artifact@v5
-    #   with:
-    #     name: archive-deb13-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.BASE_VERSION }}
-    #     github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
-    #     repository: fatmelon/documentdb
-    #     run-id: ${{ github.event.inputs.packages_run_id }}
-    #     path: ./downloaded-artifacts/
-    # - name: Display structure of downloaded files
-    #   run: ls -R ./downloaded-artifacts/
     - name: Extract and Format Default Version
       id: extract_version
       run: |
@@ -89,10 +74,17 @@ jobs:
           --build-arg DEB_PACKAGE_REL_PATH=downloaded-artifacts/$(ls downloaded-artifacts | grep -v 'dbgsym')  \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
           -f .github/containers/Build-Ubuntu/Dockerfile_combined .
-        docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
+
+        if [ "${{ github.event.inputs.push_images }}" = "true" ]; then
+          echo "Pushing image ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG"
+          docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
+        else  
+          echo "Skipping push of image ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG"
+        fi
     
   create-manifest:
     name: Create, Push, Sign & Verify Manifest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         pg_version:
@@ -108,11 +100,6 @@ jobs:
       run: echo "Using DOCUMENTDB_VERSION=${{ needs.prepare.outputs.documentdb_version }}"
     - name: Set Default Values
       run: |
-        # DOCUMENTDB_VERSION=$(grep -E "^default_version" pg_documentdb_core/documentdb_core.control | sed -E "s/.*'([0-9]+\.[0-9]+-[0-9]+)'.*/\1/")
-        # DOCUMENTDB_VERSION=$(echo $DOCUMENTDB_VERSION | sed "s/-/./g")
-        # echo "Extracted Version: $DOCUMENTDB_VERSION"
-        # echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
-        # echo "MANIFEST_TAG=${{ github.event.inputs.manifest_tag || env.DEFAULT_MANIFEST_TAG }}-${{ matrix.pg_version }}" >> $GITHUB_ENV
         echo "MANIFEST_TAG=${{ matrix.pg_version }}-${{ needs.build-and-push.outputs.documentdb_version }}" >> $GITHUB_ENV
     - name: Create and Push Manifest
       run: |
@@ -139,6 +126,7 @@ jobs:
 
   create-manifest-latest:  
     name: Create, Push, Sign & Verify Manifest (latest)
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     needs: build-and-push
     steps:
