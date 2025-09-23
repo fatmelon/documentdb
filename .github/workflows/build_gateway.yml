@@ -108,7 +108,7 @@ jobs:
         echo "Extracted Version: $DOCUMENTDB_VERSION"
         echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
         # echo "MANIFEST_TAG=${{ github.event.inputs.manifest_tag || env.DEFAULT_MANIFEST_TAG }}-${{ matrix.pg_version }}" >> $GITHUB_ENV
-        echo "MANIFEST_TAG=${{ matrix.pg_version }}-$DOCUMENTDB_VERSION" >> $GITHUB_ENV
+        echo "MANIFEST_TAG=${{ matrix.pg_version }}-${{ env.DOCUMENTDB_VERSION }}" >> $GITHUB_ENV
     - name: Create and Push Manifest
       run: |
         docker manifest create ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ env.MANIFEST_TAG }} \
