@@ -52,11 +52,7 @@ RUN useradd -ms /bin/bash documentdb -G sudo
 RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
 
 # ----------- Gateway Build Stage -----------
-ARG BASE_ARCH=AMD64
-ARG BASE_VERSION=0.104.0
 FROM prebuild AS stage
-ARG BASE_ARCH
-ARG BASE_VERSION
 
 ENV RUSTUP_HOME=/home/documentdb/.rustup \
     CARGO_HOME=/home/documentdb/.cargo \
@@ -88,18 +84,13 @@ ENV CARGO_PROFILE_RELEASE_PANIC=abort
 RUN cargo build --release && strip target/release/documentdb_gateway || true
 
 # ----------- Final Gateway Image -----------
-ARG BASE_ARCH=AMD64
-ARG BASE_VERSION=0.104.0
 FROM prebuild AS final
-ARG BASE_ARCH
-ARG BASE_VERSION
 ARG POSTGRES_VERSION
 
 RUN sudo groupmod -g 103 postgres && sudo usermod -u 105 -g 103 postgres
 RUN sudo apt-get update && \
     sudo apt-get install -y --no-install-recommends \
     jq openssl lsof && \
-    # sudo apt-get upgrade -y && \
     sudo rm -rf /var/lib/apt/lists/*
 
 ENV LANGUAGE=en_US.UTF-8 \
