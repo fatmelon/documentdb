@@ -3,15 +3,15 @@ name: Gateway Image - Build and Push to GHCR (Native AMD64 and ARM64)
 on:
   workflow_dispatch:
     inputs:
-      packages_run_id:
-        description: 'Run ID of the build_packages workflow to download the Debian package from'
-        required: true
+      # packages_run_id:
+      #   description: 'Run ID of the build_packages workflow to download the Debian package from'
+      #   required: true
       manifest_tag:
         description: 'Tag for the Docker manifest'
         required: false
-      base_version:
-        description: 'Base version for the Docker image'
-        required: false
+      # base_version:
+      #   description: 'Base version for the Docker image'
+      #   required: false
 
   push:
     branches:
@@ -25,7 +25,7 @@ permissions:
   id-token: write
 
 env:
-  DEFAULT_BASE_VERSION: '0.104.0'
+  # DEFAULT_BASE_VERSION: '0.104.0'
   DEFAULT_MANIFEST_TAG: 'test'
   IMAGE_NAME: documentdb-local
   IMAGE_TAG: ${{ github.run_id }}-$(date +'%Y-%m-%d')
@@ -44,15 +44,16 @@ jobs:
             base_arch: ARM64
             runner: ubuntu-22.04-arm
         pg_version:
+          - 15
           - 16
           - 17
     runs-on: ${{ matrix.runner }}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    - name: Set Default Values
-      run: |
-        echo "BASE_VERSION=${{ github.event.inputs.base_version || env.DEFAULT_BASE_VERSION }}" >> $GITHUB_ENV
+    # - name: Set Default Values
+    #   run: |
+    #     echo "BASE_VERSION=${{ github.event.inputs.base_version || env.DEFAULT_BASE_VERSION }}" >> $GITHUB_ENV
     # - uses: actions/download-artifact@v5
     #   with:
     #     name: archive-deb13-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.BASE_VERSION }}
@@ -92,6 +93,7 @@ jobs:
     strategy:
       matrix:
         pg_version:
+          - 15
           - 16
           - 17
     runs-on: ubuntu-22.04

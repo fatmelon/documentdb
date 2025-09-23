@@ -24,6 +24,7 @@ jobs:
     strategy:
       matrix:
         pg_version:
+          - 15
           - 16
           - 17
     runs-on: ubuntu-latest
