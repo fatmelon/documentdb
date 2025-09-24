@@ -84,7 +84,7 @@ jobs:
     
   create-manifest:
     name: Create, Push, Sign & Verify Manifest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && github.event.inputs.push_images == 'true'
     strategy:
       matrix:
         pg_version:
@@ -126,7 +126,7 @@ jobs:
 
   create-manifest-latest:  
     name: Create, Push, Sign & Verify Manifest (latest)
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && github.event.inputs.push_images == 'true'
     runs-on: ubuntu-22.04
     needs: build-and-push
     steps:
