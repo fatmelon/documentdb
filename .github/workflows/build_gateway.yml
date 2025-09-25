@@ -73,7 +73,7 @@ jobs:
           --build-arg POSTGRES_VERSION=${{ matrix.pg_version }} \
           --build-arg DEB_PACKAGE_REL_PATH=downloaded-artifacts/$(ls downloaded-artifacts | grep -v 'dbgsym')  \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
-          -f .github/containers/Build-Ubuntu/Dockerfile_combined .
+          -f .github/containers/Dockerfile_gateway .
 
         if [ "${{ github.event.inputs.push_images }}" = "true" ]; then
           echo "Pushing image ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG"
