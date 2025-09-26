@@ -5,7 +5,7 @@ on:
     inputs:
       push_images:
         description: 'if true, push images to GHCR (default: false) otherwise only build'
-        default: true
+        default: false
         required: false
 
   push:
@@ -75,7 +75,7 @@ jobs:
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
           -f .github/containers/Dockerfile_gateway .
 
-        if [ "${{ github.event.inputs.push_images }}" = "true" ]; then
+        if [ "${{ github.event.inputs.push_images }}" = "true" || startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' ]; then
           echo "Pushing image ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG"
           docker push ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG
         else  
@@ -84,7 +84,7 @@ jobs:
     
   create-manifest:
     name: Create, Push, Sign & Verify Manifest
-    if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && github.event.inputs.push_images == 'true'
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         pg_version:
@@ -126,7 +126,7 @@ jobs:
 
   create-manifest-latest:  
     name: Create, Push, Sign & Verify Manifest (latest)
-    if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && github.event.inputs.push_images == 'true'
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     needs: build-and-push
     steps:

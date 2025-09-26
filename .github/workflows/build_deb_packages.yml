@@ -1,4 +1,4 @@
-name: Build deb packages and prebuild images
+name: Build deb packages
 concurrency:
   group: build-packages-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
