@@ -81,6 +81,9 @@ bool EnableIndexOrderbyPushdown = DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN;
 #define DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY false
 bool EnableIndexOrderbyPushdownLegacy = DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY;
 
+#define DEFAULT_ENABLE_INDEX_ORDERBY_REVERSE true
+bool EnableIndexOrderByReverse = DEFAULT_ENABLE_INDEX_ORDERBY_REVERSE;
+
 #define DEFAULT_ENABLE_INDEX_ONLY_SCAN false
 bool EnableIndexOnlyScan = DEFAULT_ENABLE_INDEX_ONLY_SCAN;
 
@@ -181,6 +184,9 @@ bool EnableLookupIdJoinOptimizationOnCollation =
 /* Remove after v109 */
 #define DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE false
 bool UseLegacyShardKeyFilterOnUpdate = DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE;
+
+#define DEFAULT_RUM_FAIL_ON_LOST_PATH false
+bool RumFailOnLostPath = DEFAULT_RUM_FAIL_ON_LOST_PATH;
 
 
 /*
@@ -504,6 +510,13 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
+		psprintf("%s.enableIndexOrderbyReverse", newGucPrefix),
+		gettext_noop("Whether or not to enable order by reverse index pushdown"),
+		NULL, &EnableIndexOrderByReverse,
+		DEFAULT_ENABLE_INDEX_ORDERBY_REVERSE,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
 		psprintf("%s.enableIndexHintSupport", newGucPrefix),
 		gettext_noop(
 			"Whether to enable index hint support for index pushdown."),
@@ -568,6 +581,14 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 			"Whether or not to use the older style shard key filter on update calls."),
 		NULL, &UseLegacyShardKeyFilterOnUpdate,
 		DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.rumFailOnLostPath", newGucPrefix),
+		gettext_noop(
+			"Whether or not to fail the query when a lost path is detected in RUM"),
+		NULL, &RumFailOnLostPath,
+		DEFAULT_RUM_FAIL_ON_LOST_PATH,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(

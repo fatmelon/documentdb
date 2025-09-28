@@ -7,9 +7,13 @@
 * Support collation with `$sortArray` aggregation operator *[Feature]*
 * Add support for keyword `required` in `$jsonSchema`
 * Fix a segmentation fault when using ordered aggregate such as `$last` with `$setWindowFields` aggregation stage. *[Bugfix]*
+* Fix crash when building lookup pipeline queries from nested pipelines and $group aggregates *[Bugfix]*
 * Add basic support for compiling with pg18 *[Feature]*
 * Drop unused environment variable `ENFORCE_SSL` in dockerfile *[Bugfix]* (#313)
 * Remove the explicit dependency on the RUM extension (it's now implicit on the .so file). Flip to documentdb_extended_rum for PG18+ *[Feature]*
+* Use the appropriate GUC for the user_crud_commands.sql *[Bugfix]* (#319)
+* Provide Rust dev environment in devcontainer *[Feature]*
+* Add extension that adds a gateway host that's run as a postgres background worker *[Feature]*
 
 ### documentdb v0.107-0 (Unreleased) ###
 * Support sort by _id against the _id index using the enableIndexOrderbyPushdown flag *[Feature]*.

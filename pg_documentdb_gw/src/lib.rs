@@ -26,8 +26,8 @@ pub use crate::postgres::QueryCatalog;
 
 use either::Either::{Left, Right};
 use openssl::ssl::Ssl;
-use rand::Rng;
 use socket2::TcpKeepalive;
+use std::net::IpAddr;
 use std::{pin::Pin, sync::Arc, time::Duration};
 use tokio::{
     io::BufStream,
@@ -35,7 +35,7 @@ use tokio::{
 };
 use tokio_openssl::SslStream;
 use tokio_util::sync::CancellationToken;
-use uuid::Builder;
+use uuid::Uuid;
 
 use crate::{
     context::{ConnectionContext, RequestContext, ServiceContext},
@@ -44,6 +44,7 @@ use crate::{
     protocol::header::Header,
     requests::{request_tracker::RequestTracker, Request, RequestIntervalKind},
     responses::{CommandError, Response},
+    telemetry::client_info::parse_client_info,
     telemetry::TelemetryProvider,
 };
 
@@ -159,7 +160,9 @@ where
     T: PgDataClient,
 {
     let (tcp_stream, peer_address) = stream_and_address?;
-    log::info!("New TCP connection established.");
+
+    let connection_id = Uuid::new_v4();
+    log::info!(activity_id = connection_id.to_string().as_str(); "New TCP connection established");
 
     // Configure TCP stream
     tcp_stream.set_nodelay(true)?;
@@ -182,11 +185,24 @@ where
         )));
     }
 
+    let ip_address = match peer_address.ip() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => {
+            // If it's an IPv4-mapped IPv6 (::ffff:a.b.c.d), extract the IPv4.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                IpAddr::V4(v4)
+            } else {
+                IpAddr::V6(v6)
+            }
+        }
+    };
+
     let conn_ctx = ConnectionContext::new(
         service_context,
         telemetry,
-        peer_address.to_string(),
+        ip_address.to_string(),
         Some(tls_stream.ssl()),
+        connection_id,
     );
 
     let buffered_stream = BufStream::with_capacity(
@@ -199,43 +215,26 @@ where
     Ok(())
 }
 
-/// Generates a unique activity ID for request tracking.
-///
-/// Creates a UUID-based activity ID by combining random bytes with the request ID.
-/// The first 12 bytes are random, and the last 4 bytes contain the request ID
-/// in big-endian format. This ensures that each activity ID is unique while still
-/// containing the original request ID for correlation purposes.
-///
-/// # Arguments
-///
-/// * `request_id` - The numeric request identifier to embed in the activity ID
-///
-/// # Returns
-///
-/// Returns a hyphenated UUID string suitable for request tracking and correlation.
-/// The UUID format is: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` where the last 4 bytes
-/// encode the request ID.
-pub fn get_activity_id(request_id: i32) -> String {
-    let mut activity_id_bytes = [0u8; 16];
-    let mut rng = rand::thread_rng();
-    rng.fill(&mut activity_id_bytes[..12]);
-    activity_id_bytes[12..].copy_from_slice(&request_id.to_be_bytes());
-    let activity_id = Builder::from_random_bytes(activity_id_bytes).into_uuid();
-    activity_id.hyphenated().to_string()
-}
-
 async fn handle_stream<T>(mut stream: GwStream, mut connection_context: ConnectionContext)
 where
     T: PgDataClient,
 {
+    let connection_activity_id = connection_context.connection_id.to_string();
+    let connection_activity_id_as_str = connection_activity_id.as_str();
+
     loop {
         match protocol::reader::read_header(&mut stream).await {
             Ok(Some(header)) => {
-                let activity_id = get_activity_id(header.request_id);
+                let request_activity_id =
+                    connection_context.generate_request_activity_id(header.request_id);
 
-                if let Err(e) =
-                    handle_message::<T>(&mut connection_context, &header, &mut stream, &activity_id)
-                        .await
+                if let Err(e) = handle_message::<T>(
+                    &mut connection_context,
+                    &header,
+                    &mut stream,
+                    &request_activity_id,
+                )
+                .await
                 {
                     if let Err(e) = log_and_write_error(
                         &connection_context,
@@ -245,22 +244,21 @@ where
                         &mut stream,
                         None,
                         &mut RequestTracker::new(),
-                        &activity_id,
+                        &request_activity_id,
                     )
                     .await
                     {
-                        log::error!(activity_id = activity_id.as_str(); "[{}] Couldn't reply with error {:?}", header.request_id, e);
+                        log::error!(activity_id = request_activity_id.as_str(); "Couldn't reply with error {e:?}.");
                         break;
                     }
                 }
             }
 
             Ok(None) => {
-                log::info!("[{}] Connection closed", connection_context.connection_id);
+                log::info!(activity_id = connection_activity_id_as_str; "Connection closed.");
                 break;
             }
 
-            // Failed to read a header, can't provide request id in the error so use connection id instead.
             Err(e) => {
                 if let Err(e) = responses::writer::write_error_without_header(
                     &connection_context,
@@ -269,11 +267,7 @@ where
                 )
                 .await
                 {
-                    log::warn!(
-                        "[C:{}] Couldn't reply with error {:?}",
-                        connection_context.connection_id,
-                        e
-                    );
+                    log::warn!(activity_id = connection_activity_id_as_str; "Couldn't reply with error {e:?}.");
                     break;
                 }
             }
@@ -382,7 +376,7 @@ where
         )
         .await
         {
-            log::error!(activity_id = activity_id; "[{}] Couldn't reply with error {:?}", header.request_id, e);
+            log::error!(activity_id = activity_id; "Couldn't reply with error {e:?}.");
         }
     }
 
@@ -438,6 +432,7 @@ where
                 collection.to_string(),
                 request_context.tracker,
                 request_context.activity_id,
+                &parse_client_info(connection_context.client_information.as_ref()),
             )
             .await;
     }
@@ -473,6 +468,7 @@ async fn log_and_write_error(
                 collection.unwrap_or_default(),
                 request_tracker,
                 activity_id,
+                &parse_client_info(connection_context.client_information.as_ref()),
             )
             .await;
     }
