@@ -73,7 +73,7 @@ jobs:
           --build-arg POSTGRES_VERSION=${{ matrix.pg_version }} \
           --build-arg DEB_PACKAGE_REL_PATH=downloaded-artifacts/$(ls downloaded-artifacts | grep -v 'dbgsym')  \
           -t ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}:$TAG \
-          -f .github/containers/Dockerfile_gateway .
+          -f .github/workflows/containers/gateway/Dockerfile .
     - name: Push ${{ matrix.arch }} Image
       if: github.event.inputs.push_images == 'true' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
       run: |

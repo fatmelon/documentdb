@@ -62,10 +62,7 @@ ENV RUSTUP_HOME=/home/documentdb/.rustup \
 
 RUN apt-get update; \
     apt-get install -y --no-install-recommends jq curl sudo git make build-essential openssl pkg-config libssl-dev; \
-    rm -rf /var/lib/apt/lists/*; \
-    curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable; \
-    rustc --version; \
-    cargo --version
+    rm -rf /var/lib/apt/lists/*
 
 USER documentdb
 WORKDIR /home/documentdb/code
@@ -74,17 +71,15 @@ COPY . /home/documentdb/code
 
 RUN sudo chown -R documentdb:documentdb /home/documentdb/code
 
+RUN . /home/documentdb/code/scripts/install_rustup.sh; \
+    rustc --version; \
+    cargo --version
+
 WORKDIR /home/documentdb/code/pg_documentdb_gw
 
 # Compile the code
-RUN sudo chown -R documentdb:documentdb /home/documentdb/.cargo
-# RUN cargo build
-ENV RUSTFLAGS="-C strip=symbols"
-ENV CARGO_PROFILE_RELEASE_LTO=thin
-ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-ENV CARGO_PROFILE_RELEASE_PANIC=abort
-RUN cargo build --release && strip target/release/documentdb_gateway || true
-
+RUN sudo chown -R documentdb:documentdb /home/documentdb/.cargo; \
+    cargo build --profile=release-with-symbols
 # ----------- Final Gateway Image -----------
 FROM prebuild AS final
 ARG POSTGRES_VERSION
@@ -114,8 +109,9 @@ ENV ENFORCE_SSL="true" \
     PATH=/usr/lib/postgresql/${POSTGRES_VERSION}/bin:$PATH
 
 RUN sudo mkdir /home/documentdb/gateway
-COPY --from=stage /home/documentdb/code/pg_documentdb_gw/target/release/documentdb_gateway /home/documentdb/gateway/documentdb_gateway
-COPY --from=stage /home/documentdb/code/pg_documentdb_gw/SetupConfiguration.json /home/documentdb/gateway/SetupConfiguration.json
+COPY --from=stage /home/documentdb/code/pg_documentdb_gw/target/release-with-symbols/documentdb_gateway \
+                  /home/documentdb/gateway/pg_documentdb_gw/target/release-with-symbols/documentdb_gateway
+COPY --from=stage /home/documentdb/code/pg_documentdb_gw/SetupConfiguration.json /home/documentdb/gateway/pg_documentdb_gw/SetupConfiguration.json
 COPY --from=stage /home/documentdb/code/scripts/start_oss_server.sh /home/documentdb/gateway/scripts/start_oss_server.sh
 COPY --from=stage /home/documentdb/code/scripts/build_and_start_gateway.sh /home/documentdb/gateway/scripts/build_and_start_gateway.sh
 COPY --from=stage /home/documentdb/code/scripts/emulator_entrypoint.sh /home/documentdb/gateway/scripts/emulator_entrypoint.sh
