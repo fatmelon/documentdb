@@ -22,8 +22,7 @@ RUN apt-get update; \
         lsb-release \
         ca-certificates \
         locales \
-        sudo \
-    ; \
+        sudo; \
     echo "en_US.UTF-8 UTF-8" > /etc/locale.gen; \
     locale-gen; \
     rm -rf /var/lib/apt/lists/*
@@ -88,6 +87,7 @@ RUN sudo chown -R documentdb:documentdb /home/documentdb/code
 WORKDIR /home/documentdb/code/pg_documentdb_gw
 
 RUN CARGO_MANIFEST_DIR=/home/documentdb/code/pg_documentdb_gw cargo build --profile=release-with-symbols
+
 # ----------- Final Gateway Image -----------
 FROM prebuild AS final
 ARG POSTGRES_VERSION
