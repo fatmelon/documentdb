@@ -27,10 +27,14 @@ typedef struct DollarRangeParams
 
 	bool isFullScan;
 	int32_t orderScanDirection;
+
+	bool isElemMatch;
+	bson_value_t elemMatchValue;
 } DollarRangeParams;
 
 DollarRangeParams * ParseQueryDollarRange(pgbsonelement *filterElement);
 
-void InitializeQueryDollarRange(pgbsonelement *filterElement, DollarRangeParams *params);
+void InitializeQueryDollarRange(const bson_value_t *rangeValue,
+								DollarRangeParams *params);
 
 #endif

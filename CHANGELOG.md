@@ -1,3 +1,6 @@
+### documentdb v0.109-0 (Unreleased) ###
+* Support collation with find positional queries *[Feature]*
+
 ### documentdb v0.108-0 (Unreleased) ###
 * Top-level `let` variables and `$$NOW` supported by default.
 * Fix collation support on find and aggregation when variableSpec is not available *[Bugfix]*.

@@ -279,7 +279,9 @@ gin_bson_composite_path_extract_query(PG_FUNCTION_ARGS)
 	 */
 	if (!hasArrayPaths)
 	{
-		MergeSingleVariableBounds(&variableBounds, runData);
+		variableBounds.variableBoundsList =
+			MergeSingleVariableBounds(variableBounds.variableBoundsList,
+									  runData->indexBounds);
 	}
 	else if (isOrderedScan)
 	{
@@ -1360,14 +1362,16 @@ GetCompositePathIndexTraverseOption(BsonIndexStrategy strategy, void *contextOpt
 		(BsonGinCompositePathOptions *) contextOptions;
 
 	const char *indexPaths[INDEX_MAX_KEYS] = { 0 };
+	uint32_t indexPathLengths[INDEX_MAX_KEYS] = { 0 };
 	int8_t sortOrders[INDEX_MAX_KEYS] = { 0 };
 
-	int numPaths = GetIndexPathsFromOptions(
+	int numPaths = GetIndexPathsFromOptionsWithLength(
 		options,
-		indexPaths, sortOrders);
+		indexPaths, indexPathLengths, sortOrders);
 	for (int32_t i = 0; i < numPaths; i++)
 	{
-		if (strcmp(currentPath, indexPaths[i]) == 0)
+		if (indexPathLengths[i] == currentPathLength &&
+			strncmp(currentPath, indexPaths[i], currentPathLength) == 0)
 		{
 			*compositeIndexCol = i;
 			return IndexTraverse_Match;
@@ -1463,7 +1467,7 @@ GetEqualityRangePredicatesForIndexPath(IndexPath *indexPath, void *options,
 				{
 					/* This could be a full scan with $range, check on that */
 					DollarRangeParams rangeParams = { 0 };
-					InitializeQueryDollarRange(&queryElement, &rangeParams);
+					InitializeQueryDollarRange(&queryElement.bsonValue, &rangeParams);
 					if (rangeParams.isFullScan)
 					{
 						/* This is neither equality nor inequality */
@@ -1496,7 +1500,7 @@ GetEqualityRangePredicatesForIndexPath(IndexPath *indexPath, void *options,
 					case BSON_INDEX_STRATEGY_DOLLAR_RANGE:
 					{
 						DollarRangeParams rangeParams = { 0 };
-						InitializeQueryDollarRange(&queryElement, &rangeParams);
+						InitializeQueryDollarRange(&queryElement.bsonValue, &rangeParams);
 						if (!rangeParams.isFullScan)
 						{
 							nonEqualityPrefixes[filterColumn] = true;

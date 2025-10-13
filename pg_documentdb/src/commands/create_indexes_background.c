@@ -109,7 +109,6 @@ typedef enum BackgroundIndexRunStatus
 
 extern int MaxIndexBuildAttempts;
 extern int IndexQueueEvictionIntervalInSec;
-extern bool EnableMultipleIndexBuildsPerRun;
 
 /* Do not retry the index build if error code belongs to following list. */
 static const SkippableError SkippableErrors[] = {
@@ -164,7 +163,7 @@ static Datum ComposeBuildIndexResponse(FunctionCallInfo fcinfo, pgbson *buildInd
 static Datum ComposeCheckIndexStatusResponse(FunctionCallInfo fcinfo, pgbson *bson, bool
 											 ok, bool finish);
 static void TryDropCollectionIndex(int indexId);
-static bool PruneSkippableIndexes(void);
+static bool PruneSkippableIndexes(MemoryContext mcxt);
 static BackgroundIndexRunStatus build_index_concurrently_from_indexqueue_core(
 	MemoryContext stableContext);
 
@@ -191,27 +190,22 @@ command_build_index_concurrently(PG_FUNCTION_ARGS)
 		PG_RETURN_VOID();
 	}
 
-	if (EnableMultipleIndexBuildsPerRun)
-	{
-		BackgroundIndexRunStatus runStatus = RunStatus_NoValidIndexFound;
-		MemoryContext createContext = AllocSetContextCreate(fcinfo->flinfo->fn_mcxt,
-															"Create Index Child context",
-															ALLOCSET_DEFAULT_SIZES);
-		do {
-			runStatus = build_index_concurrently_from_indexqueue_core(createContext);
+	BackgroundIndexRunStatus runStatus = RunStatus_NoValidIndexFound;
+	MemoryContext createContext = AllocSetContextCreate(fcinfo->flinfo->fn_mcxt,
+														"Create Index Child context",
+														ALLOCSET_DEFAULT_SIZES);
+	do {
+		runStatus = build_index_concurrently_from_indexqueue_core(createContext);
 
-			/* Commit and start before doing another round */
-			PopAllActiveSnapshots();
-			CommitTransactionCommand();
-			StartTransactionCommand();
-			MemoryContextReset(createContext);
-		} while (runStatus == RunStatus_IndexBuildDone);
-	}
-	else
-	{
-		build_index_concurrently_from_indexqueue_core(fcinfo->flinfo->fn_mcxt);
-	}
+		/* Commit and start before doing another round */
+		PopAllActiveSnapshots();
+		CommitTransactionCommand();
+		StartTransactionCommand();
+		MemoryContextReset(createContext);
+	} while (runStatus == RunStatus_IndexBuildDone);
 
+	/* Clean up the memory context. */
+	MemoryContextDelete(createContext);
 	PG_RETURN_VOID();
 }
 
@@ -232,7 +226,7 @@ static BackgroundIndexRunStatus
 build_index_concurrently_from_indexqueue_core(MemoryContext stableContext)
 {
 	/* Prioritize pruning the index queue for old indexes */
-	if (PruneSkippableIndexes())
+	if (PruneSkippableIndexes(stableContext))
 	{
 		ereport(LOG, (errmsg(
 						  "Pruned skippable indexes. Retrying index checks in another round.")));
@@ -1837,12 +1831,12 @@ RunIndexCommandOnMetadataCoordinator(const char *query, int expectedSpiOk)
 
 
 static bool
-PruneSkippableIndexes(void)
+PruneSkippableIndexes(MemoryContext mcxt)
 {
 	bool prunedIndexes = false;
 	List *excludeCollectionIds = NIL;
 	IndexCmdRequest *volatile request = GetSkippableRequestFromIndexQueue(
-		IndexQueueEvictionIntervalInSec, excludeCollectionIds);
+		IndexQueueEvictionIntervalInSec, excludeCollectionIds, mcxt);
 
 	while (request != NULL)
 	{
@@ -1888,15 +1882,22 @@ PruneSkippableIndexes(void)
 			 */
 			ReleaseAdvisoryExclusiveSessionLockForCreateIndexBackground(
 				request->collectionId);
+			MemoryContext oldContext = MemoryContextSwitchTo(mcxt);
 			uint64_t *collectionid = palloc0(sizeof(uint64_t));
 			*collectionid = request->collectionId;
 			excludeCollectionIds = lappend(excludeCollectionIds, collectionid);
+			MemoryContextSwitchTo(oldContext);
 		}
 
+		pfree(request);
+
 		/* Check for more prunable requests */
-		request = GetSkippableRequestFromIndexQueue(IndexQueueEvictionIntervalInSec,
-													excludeCollectionIds);
+		request = GetSkippableRequestFromIndexQueue(
+			IndexQueueEvictionIntervalInSec, excludeCollectionIds, mcxt);
 	}
+
+	list_free_deep(excludeCollectionIds);
+	excludeCollectionIds = NIL;
 
 	return prunedIndexes;
 }

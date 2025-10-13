@@ -61,25 +61,29 @@ ENV RUSTUP_HOME=/home/documentdb/.rustup \
     PATH=/home/documentdb/.cargo/bin:$PATH
 
 RUN apt-get update; \
-    apt-get install -y --no-install-recommends jq curl sudo git make build-essential openssl pkg-config libssl-dev; \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends jq curl sudo git make build-essential openssl pkg-config libssl-dev software-properties-common; \
+    sudo rm -rf /var/lib/apt/lists/*
 
 USER documentdb
 WORKDIR /home/documentdb/code
 
 COPY . /home/documentdb/code
 
-RUN sudo chown -R documentdb:documentdb /home/documentdb/code
+RUN /home/documentdb/code/scripts/install_llvm.sh
 
-RUN . /home/documentdb/code/scripts/install_rustup.sh; \
-    rustc --version; \
-    cargo --version
+# Install rustup (which includes rustc and cargo) in user directory
+ENV RUSTUP_HOME=/home/documentdb/code/.rustup
+ENV CARGO_HOME=/home/documentdb/code/.cargo
+RUN mkdir -p $RUSTUP_HOME && mkdir -p $CARGO_HOME
+ENV PATH=$PATH:$CARGO_HOME/bin
+
+RUN /home/documentdb/code/scripts/install_rustup.sh --install-toolchain
+
+RUN sudo chown -R documentdb:documentdb /home/documentdb/code
 
 WORKDIR /home/documentdb/code/pg_documentdb_gw
 
-# Compile the code
-RUN sudo chown -R documentdb:documentdb /home/documentdb/.cargo; \
-    cargo build --profile=release-with-symbols
+RUN CARGO_MANIFEST_DIR=/home/documentdb/code/pg_documentdb_gw cargo build --profile=release-with-symbols
 # ----------- Final Gateway Image -----------
 FROM prebuild AS final
 ARG POSTGRES_VERSION
@@ -92,8 +96,8 @@ RUN sudo apt-get update && \
 
 ENV LANGUAGE=en_US.UTF-8 \
     TERM=xterm-256color
-ENV ENFORCE_SSL="true" \
-    CERT_PATH="" \
+
+ENV CERT_PATH="" \
     KEY_FILE="" \
     DATA_PATH="/data" \
     DOCUMENTDB_PORT="10260" \

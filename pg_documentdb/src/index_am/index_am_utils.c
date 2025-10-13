@@ -20,8 +20,6 @@
 static BsonIndexAmEntry BsonAlternateAmRegistry[5] = { 0 };
 static int BsonNumAlternateAmEntries = 0;
 
-extern bool EnableRangeOptimizationForComposite;
-
 static const char * GetRumCatalogSchema(void);
 static const char * GetRumInternalSchemaV2(void);
 
@@ -46,7 +44,7 @@ BsonIndexAmEntry RumIndexAmEntry = {
 	.am_name = "rum",
 	.get_opclass_catalog_schema = GetRumCatalogSchema,
 	.get_opclass_internal_catalog_schema = GetRumInternalSchemaV2,
-	.get_multikey_status = RumGetMultikeyStatus,
+	.get_multikey_status = NULL,
 	.get_truncation_status = RumGetTruncationStatus,
 };
 
@@ -199,7 +197,7 @@ BsonIndexAmRequiresRangeOptimization(Oid indexAm, Oid opFamilyOid)
 	/* If the opFamilyOid is the composite path op family, return whether the GUC wants it enabled or not. */
 	if (opFamilyOid == amEntry->get_composite_path_op_family_oid())
 	{
-		return EnableRangeOptimizationForComposite;
+		return false;
 	}
 
 	return true;

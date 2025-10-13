@@ -154,6 +154,16 @@ typedef struct
 } ForceIndexSupportFuncs;
 
 
+typedef struct IndexElemmatchState
+{
+	pgbson_array_writer *stateWriter;
+
+	const char *indexPath;
+	uint32_t indexPathLength;
+	bool isTopLevel;
+} IndexElemmatchState;
+
+
 /* --------------------------------------------------------- */
 /* Forward declaration */
 /* --------------------------------------------------------- */
@@ -164,8 +174,6 @@ static Path * ReplaceFunctionOperatorsInPlanPath(PlannerInfo *root, RelOptInfo *
 static Expr * ProcessRestrictionInfoAndRewriteFuncExpr(Expr *clause,
 													   ReplaceExtensionFunctionContext *
 													   context, bool trimClauses);
-static OpExpr * GetOpExprClauseFromIndexOperator(const MongoIndexOperatorInfo *operator,
-												 List *args, bytea *indexOptions);
 
 static void ExtractAndSetSearchParamterFromWrapFunction(IndexPath *indexPath,
 														ReplaceExtensionFunctionContext *
@@ -238,7 +246,7 @@ static bool TryUseAlternateIndexForPrimaryKeyLookup(PlannerInfo *root, RelOptInf
 													context,
 													MatchIndexPath matchIndexPath);
 static void PrimaryKeyLookupUnableToFindIndex(void);
-
+static bool IsBsonRangeArgsForFullScan(List *args);
 
 static const ForceIndexSupportFuncs ForceIndexOperatorSupport[] =
 {
@@ -294,14 +302,17 @@ static const ForceIndexSupportFuncs ForceIndexOperatorSupport[] =
 extern bool EnableVectorForceIndexPushdown;
 extern bool EnableGeonearForceIndexPushdown;
 extern bool UseNewElemMatchIndexPushdown;
+extern bool UseNewElemMatchIndexOperatorOnPushdown;
 extern bool DisableDollarSupportFuncSelectivity;
 extern bool EnableNewOperatorSelectivityMode;
+extern bool EnableCompositeIndexPlanner;
 extern bool EnableIndexHintSupport;
-extern bool UseLegacyForcePushdownBehavior;
 extern bool LowSelectivityForLookup;
 extern bool EnableIndexOrderbyPushdown;
-extern bool EnableIndexOrderbyPushdownLegacy;
 extern bool EnableIndexOrderByReverse;
+extern bool SetSelectivityForFullScan;
+extern bool EnableExprLookupIndexPushdown;
+extern bool EnableUnifyPfeOnIndexInfo;
 
 /* --------------------------------------------------------- */
 /* Top level exports */
@@ -355,7 +366,8 @@ dollar_support(PG_FUNCTION_ARGS)
 	else if (IsA(supportRequest, SupportRequestSelectivity))
 	{
 		SupportRequestSelectivity *req = (SupportRequestSelectivity *) supportRequest;
-		if (!DisableDollarSupportFuncSelectivity && EnableNewOperatorSelectivityMode)
+		if (!DisableDollarSupportFuncSelectivity &&
+			(EnableNewOperatorSelectivityMode || EnableCompositeIndexPlanner))
 		{
 			const MongoIndexOperatorInfo *indexOperator =
 				GetMongoIndexOperatorInfoByPostgresFuncId(req->funcid);
@@ -369,6 +381,40 @@ dollar_support(PG_FUNCTION_ARGS)
 					req->root, selectivityOpExpr, req->args, req->inputcollid,
 					req->varRelid, defaultFuncExprSelectivity);
 				req->selectivity = selectivity;
+				responsePointer = (Pointer) req;
+			}
+		}
+		else if (SetSelectivityForFullScan &&
+				 IsClusterVersionAtleast(DocDB_V0, 10, 0) &&
+				 req->funcid == BsonRangeMatchFunctionId())
+		{
+			/* For fullScan for orderby, we want to ensure we mark the
+			 * selectivity as 1.0 to ensure that we say that it will select
+			 * all rows for planner estimation.
+			 */
+			if (IsBsonRangeArgsForFullScan(req->args))
+			{
+				req->selectivity = 1.0;
+				responsePointer = (Pointer) req;
+			}
+		}
+	}
+	else if (IsA(supportRequest, SupportRequestCost))
+	{
+		/* Since a fullscan qpqual is ripped out by the planner,
+		 * we simply say here that its cost is super low.
+		 */
+		SupportRequestCost *req = (SupportRequestCost *) supportRequest;
+		if (SetSelectivityForFullScan &&
+			IsClusterVersionAtleast(DocDB_V0, 10, 0) &&
+			req->funcid == BsonRangeMatchFunctionId() && req->node != NULL &&
+			IsA(req->node, FuncExpr))
+		{
+			FuncExpr *func = (FuncExpr *) req->node;
+			if (IsBsonRangeArgsForFullScan(func->args))
+			{
+				req->per_tuple = 1e-9;
+				req->startup = 0;
 				responsePointer = (Pointer) req;
 			}
 		}
@@ -432,6 +478,38 @@ bson_dollar_merge_filter_support(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_POINTER(NULL);
+}
+
+
+static bool
+IsBsonRangeArgsForFullScan(List *args)
+{
+	if (list_length(args) == 2)
+	{
+		return false;
+	}
+
+	Expr *queryVal = lsecond(args);
+	if (!IsA(queryVal, Const))
+	{
+		/* If the query value is not a constant, we can't push down */
+		return false;
+	}
+
+	Const *queryConst = (Const *) queryVal;
+	pgbson *queryBson = DatumGetPgBson(queryConst->constvalue);
+
+	pgbsonelement queryElement;
+	PgbsonToSinglePgbsonElement(queryBson, &queryElement);
+
+	DollarRangeParams rangeParams = { 0 };
+	InitializeQueryDollarRange(&queryElement.bsonValue, &rangeParams);
+	if (rangeParams.isFullScan)
+	{
+		return true;
+	}
+
+	return false;
 }
 
 
@@ -1251,14 +1329,6 @@ ForceIndexForQueryOperators(PlannerInfo *root, RelOptInfo *rel,
 		rel->partial_pathlist = oldPartialPathList;
 	}
 
-	if (UseLegacyForcePushdownBehavior)
-	{
-		/* Replace the func exprs to opExpr for consistency if new quals are added above */
-		rel->baserestrictinfo =
-			ReplaceExtensionFunctionOperatorsInRestrictionPaths(rel->baserestrictinfo,
-																context);
-	}
-
 	return matchingPath;
 }
 
@@ -1691,9 +1761,9 @@ GetSortDetails(PlannerInfo *root, Index rti,
 }
 
 
-static void
-ConsiderIndexOrderByPushdownNew(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
-								Index rti, ReplaceExtensionFunctionContext *context)
+void
+ConsiderIndexOrderByPushdown(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
+							 Index rti, ReplaceExtensionFunctionContext *context)
 {
 	/* In this path, we only consider order by pushdown for the PK index - so we only support
 	 * having a single order by path key
@@ -1715,6 +1785,7 @@ ConsiderIndexOrderByPushdownNew(PlannerInfo *root, RelOptInfo *rel, RangeTblEntr
 
 	if (sortDetails == NIL || !isOrderById)
 	{
+		list_free_deep(sortDetails);
 		return;
 	}
 
@@ -1835,235 +1906,6 @@ ConsiderIndexOrderByPushdownNew(PlannerInfo *root, RelOptInfo *rel, RangeTblEntr
 		/* now add the new paths */
 		Path *newPath = lfirst(cell);
 		add_path(rel, newPath);
-	}
-}
-
-
-static void
-ConsiderIndexOrderByPushdownLegacy(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
-								   Index rti, ReplaceExtensionFunctionContext *context)
-{
-	if (list_length(root->query_pathkeys) < 1)
-	{
-		return;
-	}
-
-	if (rte->rtekind != RTE_RELATION)
-	{
-		return;
-	}
-
-	bool hasOrderBy = false;
-	bool hasGroupby = false;
-	bool isOrderById = false;
-	List *sortDetails = GetSortDetails(root, rti, &hasOrderBy, &hasGroupby, &isOrderById);
-
-	if (sortDetails == NIL)
-	{
-		return;
-	}
-
-	/* Now match the sort to any index paths */
-	List *pathsToAdd = NIL;
-	ListCell *cell;
-	bool hasIndexPaths = false;
-	foreach(cell, rel->pathlist)
-	{
-		Path *path = lfirst(cell);
-
-		if (IsA(path, BitmapHeapPath))
-		{
-			BitmapHeapPath *bitmapPath = (BitmapHeapPath *) path;
-
-			if (IsA(bitmapPath->bitmapqual, IndexPath))
-			{
-				path = (Path *) bitmapPath->bitmapqual;
-			}
-		}
-
-		if (!IsA(path, IndexPath))
-		{
-			continue;
-		}
-
-		IndexPath *indexPath = (IndexPath *) path;
-		hasIndexPaths = true;
-
-		if (indexPath->indexorderbys != NIL)
-		{
-			/* Already has an order by - don't modify */
-			continue;
-		}
-
-		if (indexPath->indexinfo->relam == BTREE_AM_OID &&
-			IsBtreePrimaryKeyIndex(indexPath->indexinfo) &&
-			list_length(sortDetails) == 1)
-		{
-			/* We have a single sort and a primary key - consider if
-			 * it is an _id pushdown.
-			 */
-			SortIndexInputDetails *sortDetailsInput = linitial(sortDetails);
-			if (strcmp(sortDetailsInput->sortPath, "_id") != 0)
-			{
-				continue;
-			}
-
-			/*
-			 * We can push down the _id sort to the primary key index
-			 * if and only if there's a shard_key equality.
-			 */
-			if (list_length(indexPath->indexclauses) < 1)
-			{
-				continue;
-			}
-
-			IndexClause *indexClause = linitial(indexPath->indexclauses);
-			if (!IsA(indexClause->rinfo->clause, OpExpr))
-			{
-				continue;
-			}
-
-			OpExpr *opExpr = (OpExpr *) indexClause->rinfo->clause;
-			Expr *firstArg = linitial(opExpr->args);
-			Expr *secondArg = lsecond(opExpr->args);
-
-			if (opExpr->opno != BigintEqualOperatorId() ||
-				!IsA(firstArg, Var) || !IsA(secondArg, Const))
-			{
-				continue;
-			}
-
-			/* The first clause is a shard key equality - can push order by */
-			IndexPath *newPath = makeNode(IndexPath);
-			memcpy(newPath, indexPath, sizeof(IndexPath));
-			newPath->path.pathkeys = list_make1(sortDetailsInput->sortPathKey);
-
-			/* If the sort is descending, we need to scan the index backwards */
-			if (SortPathKeyStrategy(sortDetailsInput->sortPathKey) ==
-				BTGreaterStrategyNumber)
-			{
-				newPath->indexscandir = BackwardScanDirection;
-			}
-
-			/* Don't modify the list we're enumerating */
-			pathsToAdd = lappend(pathsToAdd, newPath);
-		}
-		else if (indexPath->indexinfo->nkeycolumns > 0 &&
-				 IsOrderBySupportedOnOpClass(indexPath->indexinfo->relam,
-											 indexPath->indexinfo->opfamily[0]))
-		{
-			/* Order by pushdown is valid iff:
-			 * 1. The index is not a multi-key index
-			 * 2. The index is multi-key but the order-by term goes from MinKey to MaxKey
-			 *    (We can currently only support that for exists)
-			 */
-			int32_t maxPathKeySupported = -1;
-			bool isReverseOrder = false;
-			if (!CompositeIndexSupportsOrderByPushdown(indexPath, sortDetails,
-													   &maxPathKeySupported,
-													   &isReverseOrder, hasGroupby))
-			{
-				continue;
-			}
-
-			if (isReverseOrder && !EnableIndexOrderByReverse)
-			{
-				continue;
-			}
-
-			if (isReverseOrder &&
-				!(IsClusterVersionAtleast(DocDB_V0, 107, 0) ||
-				  IsClusterVersionAtLeastPatch(DocDB_V0, 106, 1)))
-			{
-				continue;
-			}
-
-			IndexPath *newPath = makeNode(IndexPath);
-			memcpy(newPath, indexPath, sizeof(IndexPath));
-
-			List *indexOrderBys = NIL;
-			List *indexPathKeys = NIL;
-			List *indexOrderbyCols = NIL;
-			for (int i = 0; i <= maxPathKeySupported; i++)
-			{
-				SortIndexInputDetails *sortDetailsInput =
-					(SortIndexInputDetails *) list_nth(sortDetails, i);
-
-				Oid indexOperator = isReverseOrder ?
-									BsonOrderByReverseIndexOperatorId() :
-									BsonOrderByIndexOperatorId();
-				Expr *orderElement = make_opclause(
-					indexOperator, BsonTypeId(), false,
-					(Expr *) sortDetailsInput->sortVar,
-					(Expr *) sortDetailsInput->sortDatum,
-					InvalidOid, InvalidOid);
-				indexOrderBys = lappend(indexOrderBys, orderElement);
-				indexPathKeys = lappend(indexPathKeys, sortDetailsInput->sortPathKey);
-				indexOrderbyCols = lappend_int(indexOrderbyCols, 0);
-			}
-
-			newPath->indexorderbys = indexOrderBys;
-			newPath->indexorderbycols = indexOrderbyCols;
-			newPath->path.pathkeys = indexPathKeys;
-
-			/* Don't modify the list we're enumerating */
-			pathsToAdd = lappend(pathsToAdd, newPath);
-		}
-	}
-
-	/* Special case: if there were no index paths and
-	 * this is a single sort on the _id path, then we can
-	 * add a new index path for the _id sort iff it's filtered on shard key.
-	 * While we have a FullScan Expr for regular indexes, we don't for _id
-	 * so instead we do that logic here.
-	 */
-	if (isOrderById && list_length(sortDetails) == 1 &&
-		!hasIndexPaths && context->plannerOrderByData.shardKeyEqualityExpr != NULL)
-	{
-		SortIndexInputDetails *sortDetailsInput = linitial(sortDetails);
-		IndexOptInfo *primaryKeyIndex = GetPrimaryKeyIndexOptInfo(rel);
-
-		if (primaryKeyIndex != NULL)
-		{
-			ScanDirection scanDir =
-				SortPathKeyStrategy(sortDetailsInput->sortPathKey) ==
-				BTGreaterStrategyNumber ?
-				BackwardScanDirection : ForwardScanDirection;
-
-			IndexClause *shard_key_clause =
-				BuildPointReadIndexClause(
-					context->plannerOrderByData.shardKeyEqualityExpr, 0);
-			List *indexClauses = list_make1(shard_key_clause);
-			IndexPath *primaryKeyPath = create_index_path(
-				root, primaryKeyIndex, indexClauses, NIL, NIL, NIL, scanDir, false, NULL,
-				1, false);
-			primaryKeyPath->path.pathkeys = list_make1(sortDetailsInput->sortPathKey);
-			pathsToAdd = lappend(pathsToAdd, primaryKeyPath);
-		}
-	}
-
-	list_free_deep(sortDetails);
-
-	foreach(cell, pathsToAdd)
-	{
-		/* now add the new paths */
-		Path *newPath = lfirst(cell);
-		add_path(rel, newPath);
-	}
-}
-
-
-void
-ConsiderIndexOrderByPushdown(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
-							 Index rti, ReplaceExtensionFunctionContext *context)
-{
-	if (EnableIndexOrderbyPushdownLegacy)
-	{
-		ConsiderIndexOrderByPushdownLegacy(root, rel, rte, rti, context);
-	}
-	else
-	{
-		ConsiderIndexOrderByPushdownNew(root, rel, rte, rti, context);
 	}
 }
 
@@ -2193,6 +2035,202 @@ ProcessOrderByStatements(PlannerInfo *root,
 }
 
 
+static bool
+PopulateQueryPathAndValueFromOpExpr(OpExpr *opExpr, const char **queryPathString,
+									bson_value_t *queryValue)
+{
+	Expr *queryVal = lsecond(opExpr->args);
+	queryValue->value_type = BSON_TYPE_EOD;
+	if (IsA(queryVal, Const))
+	{
+		Const *queryConst = (Const *) queryVal;
+		pgbson *queryBson = DatumGetPgBson(queryConst->constvalue);
+
+		pgbsonelement queryElement;
+		PgbsonToSinglePgbsonElement(queryBson, &queryElement);
+		*queryPathString = queryElement.path;
+		*queryValue = queryElement.bsonValue;
+		return true;
+	}
+	else if (IsA(queryVal, FuncExpr) && EnableExprLookupIndexPushdown)
+	{
+		FuncExpr *funcExpr = (FuncExpr *) queryVal;
+		if (funcExpr->funcid ==
+			DocumentDBApiInternalBsonLookupExtractFilterExpressionFunctionOid() &&
+			list_length(funcExpr->args) >= 2)
+		{
+			Expr *secondArg = lsecond(funcExpr->args);
+			if (IsA(secondArg, Const) && !castNode(Const, secondArg)->constisnull)
+			{
+				Const *thirdConst = (Const *) secondArg;
+
+				pgbsonelement queryElement;
+				PgbsonToSinglePgbsonElementWithCollation(DatumGetPgBson(
+															 thirdConst->
+															 constvalue),
+														 &queryElement);
+				*queryPathString = queryElement.path;
+				return true;
+			}
+		}
+		else if (funcExpr->funcid == BsonExpressionGetWithLetFunctionOid() &&
+				 list_length(funcExpr->args) >= 4)
+		{
+			Expr *secondArg = lsecond(funcExpr->args);
+			if (IsA(secondArg, Const) && !castNode(Const, secondArg)->constisnull)
+			{
+				Const *thirdConst = (Const *) secondArg;
+
+				pgbsonelement queryElement;
+				PgbsonToSinglePgbsonElementWithCollation(DatumGetPgBson(
+															 thirdConst->
+															 constvalue),
+														 &queryElement);
+				*queryPathString = queryElement.path;
+				return true;
+			}
+		}
+	}
+
+	*queryPathString = NULL;
+	return false;
+}
+
+
+static int32_t
+UpdateEqualityPrefixesAndGetSortOrder(const char *queryPath, bytea *opClassOptions,
+									  OpExpr *expr, bool isPartialFilterExpr,
+									  bson_value_t *optionalQueryValue,
+									  bool equalityPrefixes[INDEX_MAX_KEYS],
+									  bool nonEqualityPrefixes[INDEX_MAX_KEYS],
+									  int32_t *outputColumnNumber,
+									  int8_t *indexSortDirection)
+{
+	int columnNumber = GetCompositeOpClassColumnNumber(queryPath,
+													   opClassOptions,
+													   indexSortDirection);
+
+	*outputColumnNumber = columnNumber;
+
+	/* Collect orderby clauses here */
+	if (columnNumber < 0)
+	{
+		return 0;
+	}
+
+	int32_t orderScanDirection = 0;
+	const MongoIndexOperatorInfo *info =
+		GetMongoIndexOperatorByPostgresOperatorId(expr->opno);
+	switch (info->indexStrategy)
+	{
+		case BSON_INDEX_STRATEGY_DOLLAR_EQUAL:
+		{
+			equalityPrefixes[columnNumber] = true;
+			break;
+		}
+
+		case BSON_INDEX_STRATEGY_INVALID:
+		{
+			if (expr->opno == BsonRangeMatchOperatorOid() &&
+				optionalQueryValue->value_type != BSON_TYPE_EOD)
+			{
+				DollarRangeParams rangeParams = { 0 };
+				InitializeQueryDollarRange(optionalQueryValue, &rangeParams);
+				if (!rangeParams.isFullScan)
+				{
+					nonEqualityPrefixes[columnNumber] = true;
+				}
+
+				orderScanDirection = rangeParams.orderScanDirection;
+			}
+			else if (isPartialFilterExpr && expr->opno ==
+					 BsonEqualMatchRuntimeOperatorId())
+			{
+				equalityPrefixes[columnNumber] = true;
+			}
+			else
+			{
+				nonEqualityPrefixes[columnNumber] = true;
+			}
+
+			break;
+		}
+
+		default:
+		{
+			/* Track the filters as being a non-equality (range predicate) */
+			nonEqualityPrefixes[columnNumber] = true;
+			break;
+		}
+	}
+
+	return orderScanDirection;
+}
+
+
+/*
+ * Some of the quals for order by can come from the PFE:
+ * Consider a case where you have an index (a, b, c) with a pfe b = 1
+ * where you have a = 1, b = 1, order by c. b = 1 gets stripped since it
+ * matches the PFE exactly, so this code only sees a = 1, fullscan(c).
+ * This should be considered valid for order by since the PFE covers the
+ * missing column. This is tracked by walking the PFE here.
+ *
+ * Similarly, consider the index (a) with pfe a = 1.
+ * While this may seem like a corner case, this is still valid, and in this
+ * case we can push down to the index as the first column is found from the PFE.
+ * Or an index with (a) with PFE a > 1 where teh query predicate is a > 1. Similarly
+ * we need to walk the PFEs to ensure we capture whether the first path is specified.
+ */
+static bool
+ProcessCompositePartialFilter(List *indexPredicate, bytea *opClassOptions,
+							  bool equalityPrefixes[INDEX_MAX_KEYS],
+							  bool nonEqualityPrefixes[INDEX_MAX_KEYS])
+{
+	ListCell *cell;
+	bool hasFirstPathSpecified = false;
+	foreach(cell, indexPredicate)
+	{
+		Node *predQual = (Node *) lfirst(cell);
+
+		/* walk the index predicates and check if they match the index */
+		if (!IsA(predQual, OpExpr))
+		{
+			continue;
+		}
+
+		OpExpr *expr = (OpExpr *) predQual;
+
+		const char *queryPath = NULL;
+		bson_value_t optionalQueryValue = { 0 };
+		if (!PopulateQueryPathAndValueFromOpExpr(expr, &queryPath, &optionalQueryValue))
+		{
+			continue;
+		}
+
+		if (queryPath == NULL)
+		{
+			continue;
+		}
+
+		int columnNumber = -1;
+		int8_t indexSortDirection = -1;
+		bool isPartialFilterExpr = true;
+		UpdateEqualityPrefixesAndGetSortOrder(
+			queryPath, opClassOptions, expr, isPartialFilterExpr,
+			&optionalQueryValue, equalityPrefixes, nonEqualityPrefixes, &columnNumber,
+			&indexSortDirection);
+
+		if (columnNumber == 0)
+		{
+			hasFirstPathSpecified = true;
+		}
+	}
+
+	return hasFirstPathSpecified;
+}
+
+
 bool
 TraverseIndexPathForCompositeIndex(struct IndexPath *indexPath, struct PlannerInfo *root)
 {
@@ -2206,7 +2244,6 @@ TraverseIndexPathForCompositeIndex(struct IndexPath *indexPath, struct PlannerIn
 	if (getMultiKeyStatusFunc != NULL &&
 		indexPath->indexinfo->amcanorderbyop &&
 		EnableIndexOrderbyPushdown &&
-		!EnableIndexOrderbyPushdownLegacy &&
 		list_length(root->query_pathkeys) > 0)
 	{
 		indexCanOrder = true;
@@ -2238,71 +2275,32 @@ TraverseIndexPathForCompositeIndex(struct IndexPath *indexPath, struct PlannerIn
 			}
 
 			OpExpr *expr = (OpExpr *) qual->clause;
-			Expr *queryVal = lsecond(expr->args);
-			if (!IsA(queryVal, Const))
+
+			const char *queryPath = NULL;
+			bson_value_t optionalQueryValue = { 0 };
+			if (!PopulateQueryPathAndValueFromOpExpr(expr, &queryPath,
+													 &optionalQueryValue))
 			{
-				/* If the query value is not a constant, we can't push down */
 				continue;
 			}
 
-			Const *queryConst = (Const *) queryVal;
-			pgbson *queryBson = DatumGetPgBson(queryConst->constvalue);
+			if (queryPath == NULL)
+			{
+				continue;
+			}
 
-			pgbsonelement queryElement;
-			PgbsonToSinglePgbsonElement(queryBson, &queryElement);
+			int columnNumber = -1;
+			int8_t indexSortDirection = 0;
+			bool isPartialFilterExpr = false;
+			int8_t orderScanDirection = UpdateEqualityPrefixesAndGetSortOrder(
+				queryPath, indexPath->indexinfo->opclassoptions[0],
+				expr, isPartialFilterExpr, &optionalQueryValue, equalityPrefixes,
+				nonEqualityPrefixes, &columnNumber, &indexSortDirection);
 
-			int8_t sortDirection;
-			int columnNumber = GetCompositeOpClassColumnNumber(queryElement.path,
-															   indexPath->indexinfo->
-															   opclassoptions[0],
-															   &sortDirection);
-
-			/* Collect orderby clauses here */
 			if (columnNumber < 0)
 			{
 				continue;
 			}
-
-			int32_t orderScanDirection = 0;
-			const MongoIndexOperatorInfo *info =
-				GetMongoIndexOperatorByPostgresOperatorId(expr->opno);
-			switch (info->indexStrategy)
-			{
-				case BSON_INDEX_STRATEGY_DOLLAR_EQUAL:
-				{
-					equalityPrefixes[columnNumber] = true;
-					break;
-				}
-
-				case BSON_INDEX_STRATEGY_INVALID:
-				{
-					if (expr->opno == BsonRangeMatchOperatorOid())
-					{
-						DollarRangeParams rangeParams = { 0 };
-						InitializeQueryDollarRange(&queryElement, &rangeParams);
-						if (!rangeParams.isFullScan)
-						{
-							nonEqualityPrefixes[columnNumber] = true;
-						}
-
-						orderScanDirection = rangeParams.orderScanDirection;
-					}
-					else
-					{
-						nonEqualityPrefixes[columnNumber] = true;
-					}
-
-					break;
-				}
-
-				default:
-				{
-					/* Track the filters as being a non-equality (range predicate) */
-					nonEqualityPrefixes[columnNumber] = true;
-					break;
-				}
-			}
-
 
 			if (orderScanDirection == 0)
 			{
@@ -2315,17 +2313,29 @@ TraverseIndexPathForCompositeIndex(struct IndexPath *indexPath, struct PlannerIn
 				continue;
 			}
 
-			bool currentPathKeyIsReverseSort = orderScanDirection != sortDirection;
+			bool currentPathKeyIsReverseSort = orderScanDirection != indexSortDirection;
 			if (currentPathKeyIsReverseSort && !indexSupportsOrderByDesc)
 			{
 				continue;
 			}
 
 			pathSortOrders[columnNumber] = currentPathKeyIsReverseSort ? -1 : 1;
-			queryOrderPaths[columnNumber] = queryElement.path;
+			queryOrderPaths[columnNumber] = queryPath;
 			minOrderByColumn = Min(minOrderByColumn, columnNumber);
 			maxOrderByColumn = Max(maxOrderByColumn, columnNumber);
 			orderbyIndexClauses = lappend(orderbyIndexClauses, clause);
+		}
+	}
+
+	if (EnableUnifyPfeOnIndexInfo &&
+		indexPath->indexinfo->indpred != NIL)
+	{
+		if (ProcessCompositePartialFilter(
+				indexPath->indexinfo->indpred,
+				indexPath->indexinfo->opclassoptions[0],
+				equalityPrefixes, nonEqualityPrefixes))
+		{
+			firstFilterColumnFound = true;
 		}
 	}
 
@@ -2802,36 +2812,6 @@ ReplaceFunctionOperatorsInPlanPath(PlannerInfo *root, RelOptInfo *rel, Path *pat
 			{
 				IndexClause *iclause = (IndexClause *) lfirst(indexPathCell);
 				RestrictInfo *rinfo = iclause->rinfo;
-				bytea *options = NULL;
-				if (indexPath->indexinfo->opclassoptions != NULL)
-				{
-					options = indexPath->indexinfo->opclassoptions[iclause->indexcol];
-				}
-
-				/* Specific to text indexes: If the OpFamily is for Text, update the context
-				 * with the index options for text. This is used later to process restriction info
-				 * so that we can push down the TSQuery with the appropriate default language settings.
-				 */
-				if (UseLegacyForcePushdownBehavior &&
-					IsTextPathOpFamilyOid(
-						indexPath->indexinfo->relam,
-						indexPath->indexinfo->opfamily[iclause->indexcol]))
-				{
-					/* If there's no options, set it. Otherwise, fail with "too many paths" */
-					QueryTextIndexData *textIndexData =
-						context->forceIndexQueryOpData.opExtraState;
-					if (textIndexData != NULL)
-					{
-						ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
-										errmsg("Excessive number of text expressions")));
-					}
-					context->forceIndexQueryOpData.type = ForceIndexOpType_Text;
-					context->forceIndexQueryOpData.path = indexPath;
-					textIndexData = palloc0(sizeof(QueryTextIndexData));
-					textIndexData->indexOptions = options;
-					context->forceIndexQueryOpData.opExtraState = (void *) textIndexData;
-				}
-
 				ReplaceExtensionFunctionContext childContext = { 0 };
 				childContext.inputData = context->inputData;
 				childContext.forceIndexQueryOpData = context->forceIndexQueryOpData;
@@ -2998,7 +2978,7 @@ ProcessRestrictionInfoAndRewriteFuncExpr(Expr *clause,
  * For TEXT this uses the language and weights that are in the index options to generate an
  * appropriate TSQuery.
  */
-static OpExpr *
+OpExpr *
 GetOpExprClauseFromIndexOperator(const MongoIndexOperatorInfo *operator, List *args,
 								 bytea *indexOptions)
 {
@@ -3146,6 +3126,44 @@ OptimizeIndexPathForFilters(IndexPath *indexPath,
 	indexPath->indexinfo->indrestrictinfo =
 		ReplaceExtensionFunctionOperatorsInRestrictionPaths(
 			indexPath->indexinfo->indrestrictinfo, context);
+
+	if (EnableUnifyPfeOnIndexInfo)
+	{
+		/*
+		 * If there's a consideration of a bitmap path,
+		 * then the PFE can get added as a bitmap qual.
+		 * In order to ensure we don't get extra runtime filters,
+		 * ensure the structure of the filters on the indexOptInfo
+		 * is the same as the one in the index quals.
+		 * Do this on a copy of the indexoptinfo to not modify the
+		 * one on the base index (in case there's other index paths etc
+		 * depending on it).
+		 */
+		IndexOptInfo *copiedInfo = palloc(sizeof(IndexOptInfo));
+		memcpy(copiedInfo, indexPath->indexinfo, sizeof(IndexOptInfo));
+		List *processedPred = NIL;
+		ListCell *singleCell;
+		foreach(singleCell, copiedInfo->indpred)
+		{
+			Expr *predExpr = (Expr *) lfirst(singleCell);
+			if (!IsA(predExpr, OpExpr))
+			{
+				predExpr = copyObject(predExpr);
+			}
+
+			bool trimClauses = true;
+			Expr *expr = ProcessRestrictionInfoAndRewriteFuncExpr(predExpr,
+																  context, trimClauses);
+			if (expr != NULL)
+			{
+				processedPred = lappend(processedPred, expr);
+			}
+		}
+
+		copiedInfo->indpred = processedPred;
+		indexPath->indexinfo = copiedInfo;
+	}
+
 	return indexPath;
 }
 
@@ -3762,7 +3780,7 @@ static bool
 EnableIndexHintForceIndexPushdown(PlannerInfo *root,
 								  ReplaceExtensionFunctionContext *context)
 {
-	return EnableIndexHintSupport && !UseLegacyForcePushdownBehavior &&
+	return EnableIndexHintSupport &&
 		   IsClusterVersionAtleast(DocDB_V0, 106, 0);
 }
 
@@ -3926,6 +3944,129 @@ PrimaryKeyLookupUnableToFindIndex(void)
 }
 
 
+static bool
+IsSupportedElemMatchExpr(Node *elemMatchExpr, bytea *options,
+						 const MongoIndexOperatorInfo **targetOperator,
+						 List **innerOpArgs, pgbsonelement *innerQueryElement)
+{
+	List *innerArgs;
+	const MongoIndexOperatorInfo *innerOperator = GetMongoIndexQueryOperatorFromNode(
+		elemMatchExpr,
+		&innerArgs);
+	if (innerOperator == NULL ||
+		innerOperator->indexStrategy == BSON_INDEX_STRATEGY_INVALID)
+	{
+		/* This is not a valid operator for elemMatch */
+		return false;
+	}
+
+	if (innerOperator->indexStrategy == BSON_INDEX_STRATEGY_DOLLAR_ELEMMATCH ||
+		IsNegationStrategy(innerOperator->indexStrategy))
+	{
+		/* We don't support negation strategies for nested elemMatch
+		 * TODO(Composite): Can we do this safely?
+		 */
+		return false;
+	}
+
+	Node *operand = lsecond(innerArgs);
+	Datum innerQueryValue = ((Const *) operand)->constvalue;
+
+	/* Check if the index is valid for the function */
+	if (!ValidateIndexForQualifierValue(options, innerQueryValue,
+										innerOperator->indexStrategy))
+	{
+		return false;
+	}
+
+	/* Since $eq can fail to traverse array of array paths, elemMatch pushdown cannot handle
+	 * this since we need to skip the recheck.
+	 * TODO: If we can get the recheck skipped here, we can support this here too.
+	 */
+	pgbsonelement queryElement;
+	PgbsonToSinglePgbsonElement(DatumGetPgBson(innerQueryValue), &queryElement);
+	StringView queryPath = {
+		.string = queryElement.path,
+		.length = queryElement.pathLength
+	};
+	if (PathHasArrayIndexElements(&queryPath))
+	{
+		/* We don't support array index elements in elemMatch */
+		return false;
+	}
+
+	if (innerOperator->indexStrategy == BSON_INDEX_STRATEGY_DOLLAR_TEXT)
+	{
+		return false;
+	}
+
+	*targetOperator = innerOperator;
+	*innerOpArgs = innerArgs;
+	*innerQueryElement = queryElement;
+	return true;
+}
+
+
+static void
+WalkExprAndAddSupportedElemMatchExprsNew(List *clauses, bytea *options,
+										 IndexElemmatchState *elemMatchState, const
+										 char *topLevelPath)
+{
+	CHECK_FOR_INTERRUPTS();
+	check_stack_depth();
+
+	ListCell *elemMatchCell;
+	foreach(elemMatchCell, clauses)
+	{
+		Node *elemMatchExpr = (Node *) lfirst(elemMatchCell);
+
+		if (IsA(elemMatchCell, BoolExpr))
+		{
+			BoolExpr *boolExpr = (BoolExpr *) elemMatchExpr;
+			if (boolExpr->boolop != AND_EXPR)
+			{
+				/* We only support $elemMatch with AND expressions */
+				continue;
+			}
+
+			WalkExprAndAddSupportedElemMatchExprsNew(
+				boolExpr->args, options, elemMatchState, topLevelPath);
+			continue;
+		}
+
+
+		List *innerArgs = NIL;
+		const MongoIndexOperatorInfo *innerOperator;
+		pgbsonelement queryElement;
+		if (!IsSupportedElemMatchExpr(elemMatchExpr, options, &innerOperator, &innerArgs,
+									  &queryElement))
+		{
+			continue;
+		}
+
+		if (elemMatchState->indexPath == NULL)
+		{
+			elemMatchState->indexPath = queryElement.path;
+			elemMatchState->indexPathLength = queryElement.pathLength;
+			elemMatchState->isTopLevel = strcmp(topLevelPath, queryElement.path) == 0;
+		}
+		else if (elemMatchState->indexPathLength != queryElement.pathLength ||
+				 strncmp(elemMatchState->indexPath, queryElement.path,
+						 queryElement.pathLength) != 0)
+		{
+			continue;
+		}
+
+		pgbson_writer qualWriter;
+		PgbsonArrayWriterStartDocument(elemMatchState->stateWriter, &qualWriter);
+		PgbsonWriterAppendInt32(&qualWriter, "op", 2, innerOperator->indexStrategy);
+		PgbsonWriterAppendValue(&qualWriter, "value", 5, &queryElement.bsonValue);
+		PgbsonWriterAppendBool(&qualWriter, "isTopLevel", 10, elemMatchState->isTopLevel);
+		PgbsonArrayWriterEndDocument(elemMatchState->stateWriter, &qualWriter);
+	}
+}
+
+
 static List *
 WalkExprAndAddSupportedElemMatchExprs(List *clauses, bytea *options)
 {
@@ -3953,58 +4094,47 @@ WalkExprAndAddSupportedElemMatchExprs(List *clauses, bytea *options)
 			continue;
 		}
 
-		List *innerArgs;
-		const MongoIndexOperatorInfo *innerOperator = GetMongoIndexQueryOperatorFromNode(
-			elemMatchExpr,
-			&innerArgs);
-		if (innerOperator == NULL ||
-			innerOperator->indexStrategy == BSON_INDEX_STRATEGY_INVALID)
-		{
-			/* This is not a valid operator for elemMatch */
-			continue;
-		}
-
-		if (innerOperator->indexStrategy == BSON_INDEX_STRATEGY_DOLLAR_ELEMMATCH ||
-			IsNegationStrategy(innerOperator->indexStrategy))
-		{
-			/* We don't support negation strategies for nested elemMatch
-			 * TODO(Composite): Can we do this safely?
-			 */
-			continue;
-		}
-
-		Node *operand = lsecond(innerArgs);
-		Datum innerQueryValue = ((Const *) operand)->constvalue;
-
-		/* Check if the index is valid for the function */
-		if (!ValidateIndexForQualifierValue(options, innerQueryValue,
-											innerOperator->indexStrategy))
-		{
-			continue;
-		}
-
-		/* Since $eq can fail to traverse array of array paths, elemMatch pushdown cannot handle
-		 * this since we need to skip the recheck.
-		 * TODO: If we can get the recheck skipped here, we can support this here too.
-		 */
+		List *innerArgs = NIL;
+		const MongoIndexOperatorInfo *innerOperator;
 		pgbsonelement queryElement;
-		PgbsonToSinglePgbsonElement(DatumGetPgBson(innerQueryValue), &queryElement);
-		StringView queryPath = {
-			.string = queryElement.path,
-			.length = queryElement.pathLength
-		};
-		if (PathHasArrayIndexElements(&queryPath))
+		if (!IsSupportedElemMatchExpr(elemMatchExpr, options, &innerOperator, &innerArgs,
+									  &queryElement))
 		{
-			/* We don't support array index elements in elemMatch */
 			continue;
 		}
 
 		Expr *finalExpression =
-			(Expr *) GetOpExprClauseFromIndexOperator(innerOperator, innerArgs, options);
+			(Expr *) GetOpExprClauseFromIndexOperator(innerOperator, innerArgs,
+													  options);
 		matchedArgs = lappend(matchedArgs, finalExpression);
 	}
 
 	return matchedArgs;
+}
+
+
+static Expr *
+GetElemMatchIndexPushdownOperator(Expr *documentExpr, pgbsonelement *queryElement)
+{
+	/* In this path, we write the elemMatch as a simple $elemMatch opExpr
+	 * with a opExpr format:
+	 * "path": { "elemMatchIndexOp": [ { "op": INDEX_STRATEGY, "value": BSON } ] }
+	 */
+	pgbson_writer writer;
+	PgbsonWriterInit(&writer);
+	pgbson_writer elemMatchWriter;
+	PgbsonWriterStartDocument(&writer, queryElement->path, queryElement->pathLength,
+							  &elemMatchWriter);
+	PgbsonWriterAppendValue(&elemMatchWriter, "elemMatchIndexOp", 16,
+							&queryElement->bsonValue);
+	PgbsonWriterEndDocument(&writer, &elemMatchWriter);
+
+	Const *bsonConst = makeConst(BsonTypeId(), -1, InvalidOid, -1, PointerGetDatum(
+									 PgbsonWriterGetPgbson(&writer)), false,
+								 false);
+	return (Expr *) make_opclause(BsonRangeMatchOperatorOid(), BOOLOID, false,
+								  documentExpr, (Expr *) bsonConst, InvalidOid,
+								  InvalidOid);
 }
 
 
@@ -4028,19 +4158,50 @@ ProcessElemMatchOperator(bytea *options, Datum queryValue, const
 	/* Get the underlying list of expressions that are AND-ed */
 	List *clauses = make_ands_implicit(expr);
 
-	List *matchedArgs = WalkExprAndAddSupportedElemMatchExprs(clauses, options);
-	if (matchedArgs == NIL)
+	if (UseNewElemMatchIndexOperatorOnPushdown)
 	{
-		return NULL;
-	}
-	else if (list_length(matchedArgs) == 1)
-	{
-		/* If there's only one argument for $elemMatch, return it */
-		return (Expr *) linitial(matchedArgs);
+		IndexElemmatchState elemMatchState = { 0 };
+
+		pgbson_writer writer;
+		PgbsonWriterInit(&writer);
+		pgbson_array_writer arrayWriter;
+		PgbsonWriterStartArray(&writer, "", 0, &arrayWriter);
+		elemMatchState.stateWriter = &arrayWriter;
+
+		WalkExprAndAddSupportedElemMatchExprsNew(clauses, options, &elemMatchState,
+												 argElement.path);
+
+		if (elemMatchState.indexPath == NULL)
+		{
+			PgbsonWriterFree(&writer);
+			return NULL;
+		}
+
+		pgbsonelement queryElement;
+		queryElement.path = elemMatchState.indexPath;
+		queryElement.pathLength = elemMatchState.indexPathLength;
+		queryElement.bsonValue = PgbsonArrayWriterGetValue(&arrayWriter);
+		Expr *result = GetElemMatchIndexPushdownOperator(context.documentExpr,
+														 &queryElement);
+		PgbsonWriterFree(&writer);
+		return result;
 	}
 	else
 	{
-		return make_ands_explicit(matchedArgs);
+		List *matchedArgs = WalkExprAndAddSupportedElemMatchExprs(clauses, options);
+		if (matchedArgs == NIL)
+		{
+			return NULL;
+		}
+		else if (list_length(matchedArgs) == 1)
+		{
+			/* If there's only one argument for $elemMatch, return it */
+			return (Expr *) linitial(matchedArgs);
+		}
+		else
+		{
+			return make_ands_explicit(matchedArgs);
+		}
 	}
 }
 

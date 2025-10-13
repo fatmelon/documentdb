@@ -79,7 +79,6 @@ extern bool DefaultInlineWriteOperations;
 extern int MaxAggregationStagesAllowed;
 extern bool EnableIndexOrderbyPushdown;
 extern bool EnableIndexHintSupport;
-extern bool EnableIndexOrderbyPushdownLegacy;
 
 /* GUC to config tdigest compression */
 extern int TdigestCompressionAccuracy;
@@ -4626,7 +4625,7 @@ HandleReplaceWith(const bson_value_t *existingValue, Query *query,
  * index pushdown.
  */
 static bool
-CanPushSortFilterToIndex(Query *query)
+CanPushSortFilterToIndex(Query *query, AggregationPipelineBuildContext *context)
 {
 	if (list_length(query->jointree->fromlist) != 1)
 	{
@@ -4635,42 +4634,12 @@ CanPushSortFilterToIndex(Query *query)
 
 	RangeTblRef *rtref = linitial(query->jointree->fromlist);
 	RangeTblEntry *entry = rt_fetch(rtref->rtindex, query->rtable);
-	if (entry->rtekind != RTE_RELATION)
-	{
-		return false;
-	}
 
-	if (!EnableIndexOrderbyPushdownLegacy)
-	{
-		return true;
-	}
-
-	/* If there's no quals, we can push a full scan order by */
-	if (query->jointree->quals == NULL)
-	{
-		return true;
-	}
-
-	if (!IsA(query->jointree->quals, OpExpr))
-	{
-		return false;
-	}
-
-	OpExpr *opExpr = (OpExpr *) query->jointree->quals;
-	if (opExpr->opno != BigintEqualOperatorId())
-	{
-		return false;
-	}
-
-	if (IsA(linitial(opExpr->args), Var) &&
-		castNode(Var, linitial(opExpr->args))->varattno ==
-		DOCUMENT_DATA_TABLE_SHARD_KEY_VALUE_VAR_ATTR_NUMBER)
-	{
-		return true;
-	}
-
-	/* Unknown case */
-	return false;
+	/* Only push sort to index via meta_qual if it's a mongo collection
+	 * This means catalog tables used in listCollections and such do not
+	 * get the sort.
+	 */
+	return entry->rtekind == RTE_RELATION && context->mongoCollection != NULL;
 }
 
 
@@ -4802,8 +4771,6 @@ HandleSort(const bson_value_t *existingValue, Query *query,
 			SortByDir sortByDirection = isAscending ? SORTBY_ASC : SORTBY_DESC;
 			sortBy->location = -1;
 
-			/* If the sort is on _id and we can push it down to the primary key index, use ORDER BY object_id instead. */
-			/* match protocol defined behavior. */
 			Oid funcOid = BsonOrderByFunctionOid();
 			List *args = NIL;
 
@@ -4848,7 +4815,7 @@ HandleSort(const bson_value_t *existingValue, Query *query,
 				 * If there's an orderby pushdown to the index, add a full scan clause iff
 				 * the query has no filters yet.
 				 */
-				if (CanPushSortFilterToIndex(query) && (
+				if (CanPushSortFilterToIndex(query, context) && (
 						IsClusterVersionAtLeastPatch(DocDB_V0, 103, 1) ||
 						IsClusterVersionAtLeastPatch(DocDB_V0, 104, 1) ||
 						IsClusterVersionAtleast(DocDB_V0, 105, 0)))
@@ -4863,7 +4830,6 @@ HandleSort(const bson_value_t *existingValue, Query *query,
 					query->jointree->quals = (Node *) make_ands_explicit(
 						currentQuals);
 				}
-
 
 				/* If sort by is descending use the new operators: this allows for
 				 * customization of reverse scan.
@@ -6215,7 +6181,7 @@ HandleGroup(const bson_value_t *existingValue, Query *query,
 		 * the query has no filters yet.
 		 */
 		if (isGroupByValidForIndexPushdown &&
-			CanPushSortFilterToIndex(query) && (
+			CanPushSortFilterToIndex(query, context) && (
 				IsClusterVersionAtLeastPatch(DocDB_V0, 103, 1) ||
 				IsClusterVersionAtLeastPatch(DocDB_V0, 104, 1) ||
 				IsClusterVersionAtleast(DocDB_V0, 105, 0)))

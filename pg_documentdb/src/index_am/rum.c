@@ -42,7 +42,8 @@
 extern bool ForceUseIndexIfAvailable;
 extern bool EnableIndexOrderbyPushdown;
 extern bool EnableIndexOnlyScan;
-extern bool EnableIndexOrderbyPushdownLegacy;
+extern bool EnableCompositeIndexPlanner;
+
 extern const RumIndexArrayStateFuncs RoaringStateFuncs;
 
 bool RumHasMultiKeyPaths = false;
@@ -56,6 +57,9 @@ static bool loaded_rum_routine = false;
 static IndexAmRoutine rum_index_routine = { 0 };
 
 const RumIndexArrayStateFuncs *IndexArrayStateFuncs = &RoaringStateFuncs;
+
+static GetMultikeyStatusFunc rum_index_multi_key_get_func = NULL;
+static UpdateMultikeyStatusFunc rum_index_multi_key_update_func = NULL;
 
 typedef enum IndexMultiKeyStatus
 {
@@ -82,9 +86,7 @@ typedef struct DocumentDBRumIndexState
 } DocumentDBRumIndexState;
 
 
-const char *DocumentdbRumPath = "$libdir/pg_documentdb_extended_rum";
-const char *RumIndexExplainFuncSymbol = "try_explain_rum_index";
-const char *RumIndexOrderedScanInquiryFuncSymbol = "can_rum_index_scan_ordered";
+const char *DocumentdbRumCorePath = "$libdir/pg_documentdb_extended_rum_core";
 
 typedef const RumIndexArrayStateFuncs *(*GetIndexArrayStateFuncsFunc)(void);
 
@@ -120,6 +122,16 @@ static bool extension_ruminsert(Relation indexRelation,
 								bool indexUnchanged,
 								struct IndexInfo *indexInfo);
 
+static void extension_rumcostestimate(PlannerInfo *root, IndexPath *path,
+									  double loop_count,
+									  Cost *indexStartupCost, Cost *indexTotalCost,
+									  Selectivity *indexSelectivity,
+									  double *indexCorrelation,
+									  double *indexPages);
+static IndexAmRoutine * GetRumIndexHandler(PG_FUNCTION_ARGS);
+
+static bool RumGetMultiKeyStatusSlow(Relation relation);
+
 static bool RumScanOrderedFalse(IndexScanDesc scan);
 static CanOrderInIndexScan rum_index_scan_ordered = RumScanOrderedFalse;
 
@@ -142,6 +154,62 @@ EnsureRumLibLoaded(void)
 }
 
 
+typedef enum RumFunctionCatalog
+{
+	RumFunction_AmHandler = 0,
+	RumFunction_ExtractTsQuery,
+	RumFunction_TsQueryConsistent,
+	RumFunction_Tsvector_Config,
+	RumFunction_Tsquery_PreConsistent,
+	RumFunction_Tsquery_Distance,
+	RumFunction_Ts_Join_Pos,
+	RumFunction_Extract_Tsvector,
+	RumFunction_TryExplainRumIndex,
+	RumFunction_CanRumIndexScanOrdered,
+	RumFunction_RumGetMultiKeyStatus,
+	RumFunction_RumUpdateMultiKeyStatus,
+	RumFunction_SetUnredactedLogHook,
+	RumFunction_Max,
+} RumFunctionCatalog;
+
+
+static const char *RumFunctionArray[RumFunction_Max] =
+{
+	[RumFunction_AmHandler] = "rumhandler",
+	[RumFunction_ExtractTsQuery] = "rum_extract_tsquery",
+	[RumFunction_TsQueryConsistent] = "rum_tsquery_consistent",
+	[RumFunction_Tsvector_Config] = "rum_tsvector_config",
+	[RumFunction_Tsquery_PreConsistent] = "rum_tsquery_pre_consistent",
+	[RumFunction_Tsquery_Distance] = "rum_tsquery_distance",
+	[RumFunction_Ts_Join_Pos] = "rum_ts_join_pos",
+	[RumFunction_Extract_Tsvector] = "rum_extract_tsvector",
+	[RumFunction_TryExplainRumIndex] = "try_explain_rum_index",
+	[RumFunction_CanRumIndexScanOrdered] = "can_rum_index_scan_ordered",
+	[RumFunction_RumGetMultiKeyStatus] = "rum_get_multi_key_status",
+	[RumFunction_RumUpdateMultiKeyStatus] = "rum_update_multi_key_status",
+	[RumFunction_SetUnredactedLogHook] = "SetRumUnredactedLogEmitHook"
+};
+
+
+static const char *DocumentDBRumFunctionArray[RumFunction_Max] =
+{
+	[RumFunction_AmHandler] = "documentdb_rumhandler",
+	[RumFunction_ExtractTsQuery] = "documentdb_extended_rum_extract_tsquery",
+	[RumFunction_TsQueryConsistent] = "documentdb_extended_rum_tsquery_consistent",
+	[RumFunction_Tsvector_Config] = "documentdb_extended_rum_tsvector_config",
+	[RumFunction_Tsquery_PreConsistent] =
+		"documentdb_extended_rum_tsquery_pre_consistent",
+	[RumFunction_Tsquery_Distance] = "documentdb_extended_rum_tsquery_distance",
+	[RumFunction_Ts_Join_Pos] = "documentdb_extended_rum_ts_join_pos",
+	[RumFunction_Extract_Tsvector] = "documentdb_extended_rum_extract_tsvector",
+	[RumFunction_TryExplainRumIndex] = "try_explain_documentdb_rum_index",
+	[RumFunction_CanRumIndexScanOrdered] = "can_documentdb_rum_index_scan_ordered",
+	[RumFunction_RumGetMultiKeyStatus] = "documentdb_rum_get_multi_key_status",
+	[RumFunction_RumUpdateMultiKeyStatus] = "documentdb_rum_update_multi_key_status",
+	[RumFunction_SetUnredactedLogHook] = "DocumentDBSetRumUnredactedLogEmitHook",
+};
+
+
 /* --------------------------------------------------------- */
 /* Top level exports */
 /* --------------------------------------------------------- */
@@ -153,6 +221,12 @@ PG_FUNCTION_INFO_V1(documentdb_rum_tsquery_pre_consistent);
 PG_FUNCTION_INFO_V1(documentdb_rum_tsquery_distance);
 PG_FUNCTION_INFO_V1(documentdb_rum_ts_join_pos);
 PG_FUNCTION_INFO_V1(documentdb_rum_extract_tsvector);
+
+
+extern void SetDocumentDBFunctionNames(const char *explainRumIndexFunc, const
+									   char *canRumIndexScanOrdered,
+									   const char *getMultiKeyStatus, const
+									   char *updateMultiKeyStatus);
 
 
 /*
@@ -228,30 +302,19 @@ documentdb_rum_extract_tsvector(PG_FUNCTION_ARGS)
 
 
 void
-RegisterIndexArrayStateFuncs(const RumIndexArrayStateFuncs *funcs)
+SetDocumentDBFunctionNames(const char *explainRumIndexFunc, const
+						   char *canRumIndexScanOrdered,
+						   const char *getMultiKeyStatus, const
+						   char *updateMultiKeyStatus)
 {
-	if (IndexArrayStateFuncs != NULL && IndexArrayStateFuncs != &RoaringStateFuncs)
-	{
-		/* Fail as register should only happen once */
-		ereport(ERROR, (errmsg("Index array state functions already registered")));
-	}
-
-	if (funcs == NULL)
-	{
-		ereport(ERROR, (errmsg("Index array state functions must not be null")));
-	}
-
-	if (funcs->createState == NULL || funcs->addItem == NULL ||
-		funcs->freeState == NULL)
-	{
-		ereport(ERROR, (errmsg("Index array state functions must not be null")));
-	}
-
-	IndexArrayStateFuncs = funcs;
+	RumFunctionArray[RumFunction_TryExplainRumIndex] = explainRumIndexFunc;
+	RumFunctionArray[RumFunction_CanRumIndexScanOrdered] = canRumIndexScanOrdered;
+	RumFunctionArray[RumFunction_RumGetMultiKeyStatus] = getMultiKeyStatus;
+	RumFunctionArray[RumFunction_RumUpdateMultiKeyStatus] = updateMultiKeyStatus;
 }
 
 
-IndexAmRoutine *
+static IndexAmRoutine *
 GetRumIndexHandler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *indexRoutine = palloc0(sizeof(IndexAmRoutine));
@@ -303,13 +366,40 @@ LoadRumRoutine(void)
 
 	ereport(LOG, (errmsg("Loading RUM handler with DocumentDBRumLibraryLoadOption: %d",
 						 DocumentDBRumLibraryLoadOption)));
+
+	StaticAssertExpr(RumFunction_Max == sizeof(RumFunctionArray) /
+					 sizeof(RumFunctionArray[0]),
+					 "Mismatch between RumFunctionCatalog enum and RumFunctionArray size");
+	StaticAssertExpr(RumFunction_Max == sizeof(DocumentDBRumFunctionArray) /
+					 sizeof(DocumentDBRumFunctionArray[0]),
+					 "Mismatch between RumFunctionCatalog enum and DocumentDBRumFunctionArray size");
+	for (int i = 0; i < RumFunction_Max; i++)
+	{
+		if (DocumentDBRumFunctionArray[i] == NULL ||
+			strlen(DocumentDBRumFunctionArray[i]) == 0)
+		{
+			ereport(PANIC, (errmsg(
+								"DocumentDBRum Function must be defined for for index %d",
+								i)));
+		}
+
+		if (RumFunctionArray[i] == NULL ||
+			strlen(RumFunctionArray[i]) == 0)
+		{
+			ereport(PANIC, (errmsg("Rum Function must be defined for for index %d", i)));
+		}
+	}
+
+	const char **functionCatalog;
 	switch (DocumentDBRumLibraryLoadOption)
 	{
 		case RumLibraryLoadOption_RequireDocumentDBRum:
 		{
-			rumLibPath = DocumentdbRumPath;
+			rumLibPath = DocumentdbRumCorePath;
+			functionCatalog = DocumentDBRumFunctionArray;
 			rumhandler = load_external_function(rumLibPath,
-												"documentdb_rumhandler", !missingOk,
+												functionCatalog[RumFunction_AmHandler],
+												!missingOk,
 												ignoreLibFileHandle);
 			ereport(LOG, (errmsg(
 							  "Loaded documentdb_rumhandler successfully via pg_documentdb_extended_rum")));
@@ -318,15 +408,19 @@ LoadRumRoutine(void)
 
 		case RumLibraryLoadOption_PreferDocumentDBRum:
 		{
-			rumLibPath = DocumentdbRumPath;
+			rumLibPath = DocumentdbRumCorePath;
+			functionCatalog = DocumentDBRumFunctionArray;
 			rumhandler = load_external_function(rumLibPath,
-												"documentdb_rumhandler", missingOk,
+												functionCatalog[RumFunction_AmHandler],
+												missingOk,
 												ignoreLibFileHandle);
 
 			if (rumhandler == NULL)
 			{
 				rumLibPath = "$libdir/rum";
-				rumhandler = load_external_function(rumLibPath, "rumhandler",
+				functionCatalog = RumFunctionArray;
+				rumhandler = load_external_function(rumLibPath,
+													functionCatalog[RumFunction_AmHandler],
 													!missingOk,
 													ignoreLibFileHandle);
 				ereport(LOG,
@@ -346,7 +440,10 @@ LoadRumRoutine(void)
 		case RumLibraryLoadOption_None:
 		{
 			rumLibPath = "$libdir/rum";
-			rumhandler = load_external_function(rumLibPath, "rumhandler", !missingOk,
+			functionCatalog = RumFunctionArray;
+			rumhandler = load_external_function(rumLibPath,
+												functionCatalog[RumFunction_AmHandler],
+												!missingOk,
 												ignoreLibFileHandle);
 			ereport(LOG, (errmsg("Loaded documentdb_rum handler successfully via rum")));
 			break;
@@ -368,32 +465,41 @@ LoadRumRoutine(void)
 
 	/* Load required C functions */
 	rum_extract_tsquery_func =
-		load_external_function(rumLibPath, "rum_extract_tsquery", !missingOk,
+		load_external_function(rumLibPath, functionCatalog[RumFunction_ExtractTsQuery],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	rum_tsquery_consistent_func =
-		load_external_function(rumLibPath, "rum_tsquery_consistent", !missingOk,
+		load_external_function(rumLibPath, functionCatalog[RumFunction_TsQueryConsistent],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	rum_tsvector_config_func =
-		load_external_function(rumLibPath, "rum_tsvector_config", !missingOk,
+		load_external_function(rumLibPath, functionCatalog[RumFunction_Tsvector_Config],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	rum_tsquery_pre_consistent_func =
-		load_external_function(rumLibPath, "rum_tsquery_pre_consistent", !missingOk,
+		load_external_function(rumLibPath,
+							   functionCatalog[RumFunction_Tsquery_PreConsistent],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	rum_tsquery_distance_func =
-		load_external_function(rumLibPath, "rum_tsquery_distance", !missingOk,
+		load_external_function(rumLibPath, functionCatalog[RumFunction_Tsquery_Distance],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	rum_ts_join_pos_func =
-		load_external_function(rumLibPath, "rum_ts_join_pos", !missingOk,
+		load_external_function(rumLibPath, functionCatalog[RumFunction_Ts_Join_Pos],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	rum_extract_tsvector_func =
-		load_external_function(rumLibPath, "rum_extract_tsvector", !missingOk,
+		load_external_function(rumLibPath, functionCatalog[RumFunction_Extract_Tsvector],
+							   !missingOk,
 							   ignoreLibFileHandle);
 
 	/* Load optional explain function */
 	missingOk = true;
 	TryExplainIndexFunc explain_index_func =
 		load_external_function(rumLibPath,
-							   RumIndexExplainFuncSymbol, !missingOk,
+							   functionCatalog[RumFunction_TryExplainRumIndex],
+							   !missingOk,
 							   ignoreLibFileHandle);
 
 	if (explain_index_func != NULL)
@@ -403,7 +509,8 @@ LoadRumRoutine(void)
 
 	CanOrderInIndexScan scanOrderedFunc =
 		load_external_function(rumLibPath,
-							   RumIndexOrderedScanInquiryFuncSymbol, !missingOk,
+							   functionCatalog[RumFunction_CanRumIndexScanOrdered],
+							   !missingOk,
 							   ignoreLibFileHandle);
 	if (scanOrderedFunc != NULL)
 	{
@@ -413,7 +520,8 @@ LoadRumRoutine(void)
 	void (*setRumUnredactedLogEmitHookFunc)(format_log_hook hook) = NULL;
 	setRumUnredactedLogEmitHookFunc =
 		load_external_function(rumLibPath,
-							   "SetRumUnredactedLogEmitHook", !missingOk,
+							   functionCatalog[RumFunction_SetUnredactedLogHook],
+							   !missingOk,
 							   ignoreLibFileHandle);
 
 	if (setRumUnredactedLogEmitHookFunc != NULL)
@@ -421,6 +529,32 @@ LoadRumRoutine(void)
 		setRumUnredactedLogEmitHookFunc(unredacted_log_emit_hook);
 	}
 
+	rum_index_multi_key_get_func =
+		load_external_function(rumLibPath,
+							   functionCatalog[RumFunction_RumGetMultiKeyStatus],
+							   !missingOk,
+							   ignoreLibFileHandle);
+	if (rum_index_multi_key_get_func != NULL)
+	{
+		RumIndexAmEntry.get_multikey_status = rum_index_multi_key_get_func;
+	}
+	else
+	{
+		/* For backwards compatibility with public RUM, here we use the slow
+		 * path and query the multi-key status
+		 */
+		RumIndexAmEntry.get_multikey_status = RumGetMultiKeyStatusSlow;
+	}
+
+	rum_index_multi_key_update_func =
+		load_external_function(rumLibPath,
+							   functionCatalog[RumFunction_RumUpdateMultiKeyStatus],
+							   !missingOk,
+							   ignoreLibFileHandle);
+
+	ereport(LOG, (errmsg("rum library has update func %d, get func %d",
+						 rum_index_multi_key_update_func != NULL,
+						 rum_index_multi_key_get_func != NULL)));
 	loaded_rum_routine = true;
 	pfree(indexRoutine);
 }
@@ -439,11 +573,27 @@ LoadRumRoutine(void)
  * build_index_paths). In this case, we need to check that at least one predicate matches the
  * index for the index to be considered.
  */
-void
+static void
 extension_rumcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 						  Cost *indexStartupCost, Cost *indexTotalCost,
 						  Selectivity *indexSelectivity, double *indexCorrelation,
 						  double *indexPages)
+{
+	bool forceIndexPushdownCostToZero = !EnableCompositeIndexPlanner &&
+										ForceUseIndexIfAvailable;
+	extension_rumcostestimate_core(root, path, loop_count, indexStartupCost,
+								   indexTotalCost,
+								   indexSelectivity, indexCorrelation, indexPages,
+								   &rum_index_routine, forceIndexPushdownCostToZero);
+}
+
+
+void
+extension_rumcostestimate_core(PlannerInfo *root, IndexPath *path, double loop_count,
+							   Cost *indexStartupCost, Cost *indexTotalCost,
+							   Selectivity *indexSelectivity, double *indexCorrelation,
+							   double *indexPages, IndexAmRoutine *coreRoutine,
+							   bool forceIndexPushdownCostToZero)
 {
 	if (!IsIndexIsValidForQuery(path))
 	{
@@ -460,10 +610,7 @@ extension_rumcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	if (IsCompositeOpFamilyOid(path->indexinfo->relam,
 							   path->indexinfo->opfamily[0]))
 	{
-		bool firstColumnSpecified =
-			EnableIndexOrderbyPushdownLegacy ?
-			CompositePathHasFirstColumnSpecified(path) :
-			TraverseIndexPathForCompositeIndex(path, root);
+		bool firstColumnSpecified = TraverseIndexPathForCompositeIndex(path, root);
 
 		/* If this is a composite index, then we need to ensure that
 		 * the first column of the index matches the query path.
@@ -479,231 +626,21 @@ extension_rumcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		}
 	}
 
-	/* Index is valid - pick the cost estimate for rum (which currently is the gin cost estimate) */
-	gincostestimate(root, path, loop_count, indexStartupCost, indexTotalCost,
-					indexSelectivity, indexCorrelation, indexPages);
+	coreRoutine->amcostestimate(
+		root, path, loop_count, indexStartupCost, indexTotalCost,
+		indexSelectivity, indexCorrelation, indexPages);
 
 	/* Do a pass to check for text indexes (We force push down with cost == 0) */
-	if (ForceUseIndexIfAvailable || IsTextIndexMatch(path))
+	if (IsTextIndexMatch(path))
 	{
 		*indexTotalCost = 0;
 		*indexStartupCost = 0;
 	}
-}
-
-
-/*
- * Currently orderby pushdown only works for RUM indexes if enabled.
- * However, orderby also requires that the index is
- * 1) Not a multi-key index
- * 2) Or the filters on order by are full range filters.
- *
- * Currently we ignore multi-key indexes altogether.
- * TODO: Support multi-key indexes with order by pushdown if the orderby
- * matches the [MinKey, MaxKey] range of the path with an equality prefix.
- */
-bool
-CompositeIndexSupportsOrderByPushdown(IndexPath *indexPath, List *sortDetails,
-									  int32_t *maxPathKeySupported,
-									  bool *isReverseOrder, bool isGroupBy)
-{
-	GetMultikeyStatusFunc getMultiKeyStatusFunc = GetMultiKeyStatusByRelAm(
-		indexPath->indexinfo->relam);
-	if (getMultiKeyStatusFunc == NULL)
+	else if (forceIndexPushdownCostToZero)
 	{
-		return false;
+		*indexTotalCost = 0;
+		*indexStartupCost = 0;
 	}
-
-	if (!indexPath->indexinfo->amcanorderbyop)
-	{
-		/* No use if the index can't order by operator */
-		return false;
-	}
-
-	bool indexSupportsOrderByDesc = GetIndexSupportsBackwardsScan(
-		indexPath->indexinfo->relam);
-
-	BsonGinIndexOptionsBase *options =
-		(BsonGinIndexOptionsBase *) indexPath->indexinfo->opclassoptions[0];
-
-	if (options->type != IndexOptionsType_Composite)
-	{
-		return false;
-	}
-
-	ListCell *sortCell;
-	int32_t maxOrderbyColumn = -1;
-	int32_t lastContiguousOrderbyColumn = -1;
-	int32_t minOrderbyColumn = INT_MAX;
-	int32_t orderByDetailIndex = 0;
-	bool hasReverseOrder = false;
-	bool hasForwardSortOrder = false;
-	foreach(sortCell, sortDetails)
-	{
-		SortIndexInputDetails *sortDetailsInput = (SortIndexInputDetails *) lfirst(
-			sortCell);
-
-		int8_t sortDirection = 0;
-		int32_t orderbyColumnNumber = GetCompositeOpClassColumnNumber(
-			sortDetailsInput->sortPath,
-			options, &sortDirection);
-		if (orderbyColumnNumber < 0)
-		{
-			/* If the order by path does not match the index, we can't push down any further keys */
-			break;
-		}
-
-		/* If the sort doesn't match the index, then break */
-		int32_t sortBtreeStrategy = sortDirection < 0 ? BTGreaterStrategyNumber :
-									BTLessStrategyNumber;
-
-		bool currentPathKeyIsReverseSort = (int32_t) SortPathKeyStrategy(
-			sortDetailsInput->sortPathKey) != sortBtreeStrategy;
-		if (currentPathKeyIsReverseSort)
-		{
-			if (!indexSupportsOrderByDesc)
-			{
-				/* We can't continue pushdown any further */
-				break;
-			}
-
-			if (hasForwardSortOrder)
-			{
-				/* Prior keys were in forward order - we can't match this key */
-				break;
-			}
-
-			hasReverseOrder = true;
-		}
-		else
-		{
-			if (hasReverseOrder)
-			{
-				/* Prior keys were in reverse order - we can't match this key */
-				break;
-			}
-
-			hasForwardSortOrder = true;
-		}
-
-		if (maxOrderbyColumn < 0)
-		{
-			minOrderbyColumn = orderbyColumnNumber;
-			maxOrderbyColumn = orderbyColumnNumber;
-		}
-		else if (orderbyColumnNumber < maxOrderbyColumn + 1)
-		{
-			/* Can't sort by prior column again*/
-			break;
-		}
-		else if (orderbyColumnNumber != maxOrderbyColumn + 1 &&
-				 lastContiguousOrderbyColumn < 0)
-		{
-			/* order by does not match index ordering */
-			lastContiguousOrderbyColumn = maxOrderbyColumn;
-		}
-
-		maxOrderbyColumn = orderbyColumnNumber;
-		orderByDetailIndex = foreach_current_index(sortCell);
-	}
-
-	if (maxOrderbyColumn < 0)
-	{
-		/* No order by columns found, nothing to push down */
-		return false;
-	}
-
-	if (hasReverseOrder && hasForwardSortOrder)
-	{
-		ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_INTERNALERROR),
-						errmsg(
-							"Unexpected - found push down order by with both forward and reverse order in the same index path")));
-	}
-
-	*isReverseOrder = hasReverseOrder;
-
-	/* By default use min of lastContiguousOrderbyColumn & maxOrderbyColumn */
-	*maxPathKeySupported = lastContiguousOrderbyColumn >= 0 ?
-						   lastContiguousOrderbyColumn : orderByDetailIndex;
-	bool isMultiKeyIndex = false;
-	Relation indexRel = index_open(indexPath->indexinfo->indexoid, NoLock);
-	isMultiKeyIndex = getMultiKeyStatusFunc(indexRel);
-	index_close(indexRel, NoLock);
-
-	if (!isMultiKeyIndex && maxOrderbyColumn == 0)
-	{
-		/* Non multi-key index on the first column always supports order by */
-		return true;
-	}
-
-	if (isGroupBy && isMultiKeyIndex)
-	{
-		/* Cannot push group by to a multi-key index */
-		return false;
-	}
-
-	bool equalityPrefixes[INDEX_MAX_KEYS] = { false };
-	bool hasRangePredicate[INDEX_MAX_KEYS] = { false };
-
-	bool isValid = GetEqualityRangePredicatesForIndexPath(indexPath, options,
-														  equalityPrefixes,
-														  hasRangePredicate);
-	if (!isValid)
-	{
-		return false;
-	}
-
-	/* Now for an orderby walk the index paths and ensure we have sanity to push down
-	 * We can only push orderby to the index if the preceding columns to the first orderby
-	 * are all equality. For multi-key index, equality must go until the max order by clause.
-	 */
-	for (int i = 0; i < minOrderbyColumn; i++)
-	{
-		if (!equalityPrefixes[i])
-		{
-			return false;
-		}
-	}
-
-	if (isMultiKeyIndex)
-	{
-		/* For multi-key we may have filters on the order by that restrict rows, but there may be rows
-		 * that do not match the filter, but need to be considered for order by.
-		 * Given 2 document such as
-		 * "a": [ 3, 90, 50 ],  "a": [ 30, 51 ]
-		 * a filter of { "a": { "$gt" 50 }} orderby "a": 1 will walk the index as:
-		 *  "a": [ 30, 51 ], "a": [ 3, 90, 50 ]
-		 * which is incorrect since 3 needs to be ordered first (even though it didn't match the filter).
-		 * Consequently, only support orderby pushdown if the filter doesn't cover the orderby column.
-		 */
-		int32_t maxOrderByConsidered = lastContiguousOrderbyColumn >= 0 ?
-									   lastContiguousOrderbyColumn : maxOrderbyColumn;
-		for (int i = minOrderbyColumn; i <= maxOrderByConsidered; i++)
-		{
-			if (hasRangePredicate[i] || equalityPrefixes[i])
-			{
-				return false;
-			}
-		}
-	}
-	else if (lastContiguousOrderbyColumn >= 0)
-	{
-		/* We hit a case where we had a missing set of order by keys - we require that the remaining columns
-		 * are all equality prefixes.
-		 */
-		for (int i = lastContiguousOrderbyColumn + 1; i <= maxOrderbyColumn; i++)
-		{
-			if (!equalityPrefixes[i])
-			{
-				break;
-			}
-
-			*maxPathKeySupported = i;
-		}
-	}
-
-	/* Equality prefix with order by on the column is supported. */
-	return true;
 }
 
 
@@ -1004,7 +941,7 @@ extension_rumrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	EnsureRumLibLoaded();
 	extension_rumrescan_core(scan, scankey, nscankeys,
 							 orderbys, norderbys, &rum_index_routine,
-							 RumGetMultikeyStatus, rum_index_scan_ordered);
+							 rum_index_multi_key_get_func, rum_index_scan_ordered);
 }
 
 
@@ -1035,7 +972,15 @@ extension_rumrescan_core(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 		if (outerScanState->multiKeyStatus == IndexMultiKeyStatus_Unknown)
 		{
-			outerScanState->multiKeyStatus = multiKeyStatusFunc(scan->indexRelation);
+			if (multiKeyStatusFunc != NULL)
+			{
+				outerScanState->multiKeyStatus = multiKeyStatusFunc(scan->indexRelation);
+			}
+			else
+			{
+				outerScanState->multiKeyStatus =
+					CheckIndexHasArrays(scan->indexRelation, coreRoutine);
+			}
 		}
 
 		ScanKey innerOrderBy = NULL;
@@ -1240,7 +1185,7 @@ extension_rumbuild(Relation heapRelation,
 	bool amCanBuildParallel = true;
 	return extension_rumbuild_core(heapRelation, indexRelation,
 								   indexInfo, &rum_index_routine,
-								   RumUpdateMultiKeyStatus,
+								   rum_index_multi_key_update_func,
 								   amCanBuildParallel);
 }
 
@@ -1262,12 +1207,12 @@ extension_rumbuild_core(Relation heapRelation, Relation indexRelation,
 	if (amCanBuildParallel && IsCompositeOpClass(indexRelation))
 	{
 		IndexMultiKeyStatus status = CheckIndexHasArrays(indexRelation, coreRoutine);
-		if (status == IndexMultiKeyStatus_HasArrays)
+		if (status == IndexMultiKeyStatus_HasArrays && updateMultikeyStatus != NULL)
 		{
 			updateMultikeyStatus(indexRelation);
 		}
 	}
-	else if (RumHasMultiKeyPaths)
+	else if (RumHasMultiKeyPaths && updateMultikeyStatus != NULL)
 	{
 		updateMultikeyStatus(indexRelation);
 	}
@@ -1291,7 +1236,7 @@ extension_ruminsert(Relation indexRelation,
 	return extension_ruminsert_core(indexRelation, values, isnull,
 									heap_tid, heapRelation, checkUnique,
 									indexUnchanged, indexInfo,
-									&rum_index_routine, RumUpdateMultiKeyStatus);
+									&rum_index_routine, rum_index_multi_key_update_func);
 }
 
 
@@ -1312,12 +1257,22 @@ extension_ruminsert_core(Relation indexRelation,
 										heap_tid, heapRelation, checkUnique,
 										indexUnchanged, indexInfo);
 
-	if (RumHasMultiKeyPaths)
+	if (RumHasMultiKeyPaths && updateMultikeyStatus != NULL)
 	{
 		updateMultikeyStatus(indexRelation);
 	}
 
 	return result;
+}
+
+
+static bool
+RumGetMultiKeyStatusSlow(Relation indexRelation)
+{
+	EnsureRumLibLoaded();
+	IndexMultiKeyStatus multiKeyStatus = CheckIndexHasArrays(indexRelation,
+															 &rum_index_routine);
+	return multiKeyStatus == IndexMultiKeyStatus_HasArrays;
 }
 
 

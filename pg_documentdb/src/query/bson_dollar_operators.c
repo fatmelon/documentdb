@@ -284,7 +284,6 @@ typedef struct
 typedef bool (*IsQueryFilterNullFunc)(const TraverseValidateState *state);
 extern bool EnableCollation;
 extern bool EnableNowSystemVariable;
-extern bool UseLegacyNullEqualityBehavior;
 
 /* --------------------------------------------------------- */
 /* Forward declaration */
@@ -1276,9 +1275,12 @@ bson_dollar_range(PG_FUNCTION_ARGS)
 	rangeState.isMinConditionSet = false;
 	rangeState.isMaxConditionSet = false;
 
-	if (rangeState.params.isFullScan)
+	if (rangeState.params.isFullScan || rangeState.params.isElemMatch)
 	{
-		/* if the range is a full scan, we don't need to traverse the document */
+		/* if the range is a full scan, we don't need to traverse the document
+		 * similarly for $elemMatch this range query is only used on the index
+		 * so we bypass the runtime recheck and let the runtime filter handle it.
+		 */
 		PG_RETURN_BOOL(true);
 	}
 
@@ -2833,7 +2835,7 @@ CompareBsonAgainstQuery(const pgbson *element,
 	bool isFilterNull = isQueryFilterNull != NULL && isQueryFilterNull(
 		&state.traverseState);
 	const TraverseBsonExecutionFuncs *execFuncs = &CompareExecutionFuncs;
-	if (isFilterNull && !UseLegacyNullEqualityBehavior)
+	if (isFilterNull)
 	{
 		/* if the filter is null, start by assuming path mismatch. If we find
 		 * pathNotFound, it'll get overwritten. This way we can track explicitly

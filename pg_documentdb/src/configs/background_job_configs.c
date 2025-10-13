@@ -43,14 +43,17 @@ int SingleTTLTaskTimeBudget = DEFAULT_SINGLE_TTL_TASK_TIME_BUDGET;
 #define DEFAULT_TTL_TASK_MAX_RUNTIME_IN_MS 60000
 int TTLTaskMaxRunTimeInMS = DEFAULT_TTL_TASK_MAX_RUNTIME_IN_MS;
 
-/*TODO: Set this to true by default post 1.107 */
+/* Enable by default on 1.109 */
 #define DEFAULT_REPEAT_PURGE_INDEXES_FOR_TTL_TASK false
 bool RepeatPurgeIndexesForTTLTask = DEFAULT_REPEAT_PURGE_INDEXES_FOR_TTL_TASK;
 
-#define DEFAULT_ENABLE_BG_WORKER false
+#define DEFAULT_ENABLE_TTL_DESC_SORT false
+bool EnableTTLDescSort = DEFAULT_ENABLE_TTL_DESC_SORT;
+
+#define DEFAULT_ENABLE_BG_WORKER true
 bool EnableBackgroundWorker = DEFAULT_ENABLE_BG_WORKER;
 
-#define DEFAULT_ENABLE_BG_WORKER_JOBS false
+#define DEFAULT_ENABLE_BG_WORKER_JOBS true
 bool EnableBackgroundWorkerJobs = DEFAULT_ENABLE_BG_WORKER_JOBS;
 
 #define DEFAULT_BG_WORKER_JOB_TIMEOUT_THRESHOLD_SEC 300
@@ -118,7 +121,7 @@ InitializeBackgroundJobConfigurations(const char *prefix, const char *newGucPref
 		NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
-		psprintf("%s.TTLTaskMaxRunTimeInMS", prefix),
+		psprintf("%s.TTLTaskMaxRunTimeInMS", newGucPrefix),
 		gettext_noop(
 			"Time budget assigned in milliseconds for single invocation of ttl task."),
 		NULL,
@@ -158,6 +161,17 @@ InitializeBackgroundJobConfigurations(const char *prefix, const char *newGucPref
 		NULL,
 		&TTLPurgerLockTimeout,
 		DEFAULT_TTL_PURGER_LOCK_TIMEOUT, 1, INT_MAX,
+		PGC_USERSET,
+		0,
+		NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableTTLDescSort", newGucPrefix),
+		gettext_noop(
+			"Whether or not to enable TTL descending sort on field."),
+		NULL,
+		&EnableTTLDescSort,
+		DEFAULT_ENABLE_TTL_DESC_SORT,
 		PGC_USERSET,
 		0,
 		NULL, NULL, NULL);
@@ -204,13 +218,13 @@ InitializeBackgroundJobConfigurations(const char *prefix, const char *newGucPref
 		psprintf("%s.enableBackgroundWorker", newGucPrefix),
 		gettext_noop("Enable the extension Background worker."),
 		NULL, &EnableBackgroundWorker, DEFAULT_ENABLE_BG_WORKER,
-		PGC_SUSET, 0, NULL, NULL, NULL);
+		PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
 		psprintf("%s.enableBackgroundWorkerJobs", newGucPrefix),
 		gettext_noop("Enable the execution of the pre-defined background worker jobs."),
 		NULL, &EnableBackgroundWorkerJobs, DEFAULT_ENABLE_BG_WORKER_JOBS,
-		PGC_SUSET, 0, NULL, NULL, NULL);
+		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomIntVariable(
 		psprintf("%s.backgroundWorkerJobTimeoutThresholdSec", newGucPrefix),

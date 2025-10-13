@@ -40,6 +40,7 @@ extern bool EnableTtlJobsOnReadOnly;
 extern bool ForceIndexScanForTTLTask;
 extern bool UseIndexHintsForTTLTask;
 extern bool EnableTTLDescSort;
+extern bool EnableIndexOrderbyPushdown;
 
 bool UseV2TTLIndexPurger = true;
 
@@ -55,6 +56,9 @@ typedef struct TtlIndexEntry
 {
 	/* ID of the collection */
 	uint64 collectionId;
+
+	/* The shardid being pruned */
+	uint64 shardId;
 
 	/* The TTL index id */
 	uint64 indexId;
@@ -148,6 +152,7 @@ delete_expired_rows_for_index(PG_FUNCTION_ARGS)
 
 	TtlIndexEntry indexEntry = {
 		.collectionId = collectionId,
+		.shardId = shardId,
 		.indexId = indexId,
 		.indexKeyDatum = indexKeyDatum,
 		.indexPfeDatum = partialFilterDatum,
@@ -360,7 +365,10 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 	bool shouldCleanupCollection = false;
 	uint64 rowsDeletedInCurrentLoop = 0;
 
-	while (!IsTaskTimeBudgetExceeded(startTime, NULL, TTLTaskMaxRunTimeInMS))
+	int timeBudget = RepeatPurgeIndexesForTTLTask ? TTLTaskMaxRunTimeInMS :
+					 SingleTTLTaskTimeBudget;
+
+	while (!IsTaskTimeBudgetExceeded(startTime, NULL, timeBudget))
 	{
 		rowsDeletedInCurrentLoop = 0;
 		if (RepeatPurgeIndexesForTTLTask)
@@ -486,7 +494,7 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 																	   batchSize);
 					double elapsedTime = 0.0;
 					if (IsTaskTimeBudgetExceeded(startTime, &elapsedTime,
-												 SingleTTLTaskTimeBudget))
+												 timeBudget))
 					{
 						/* If exceeded time, mark as should stop but still commit this deletion. */
 						shouldStop = true;
@@ -495,7 +503,7 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 					if (LogTTLProgressActivity)
 					{
 						ereport(LOG, errmsg("TTL job elapsed time: %fms, limit: %dms",
-											elapsedTime, SingleTTLTaskTimeBudget));
+											elapsedTime, timeBudget));
 					}
 
 					/* Commit the deletion. */
@@ -507,7 +515,10 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 				}
 				PG_CATCH();
 				{
+					oldContext = MemoryContextSwitchTo(priorMemoryContext);
 					ErrorData *edata = CopyErrorDataAndFlush();
+					MemoryContextSwitchTo(oldContext);
+
 					ereport(WARNING, errmsg(
 								"TTL job failed when processing collection_id=%lu and index_id=%lu with error: %s",
 								collectionId, ttlIndexEntry->indexId, edata->message));
@@ -533,7 +544,7 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 				}
 			}
 
-			if (IsTaskTimeBudgetExceeded(startTime, NULL, SingleTTLTaskTimeBudget))
+			if (IsTaskTimeBudgetExceeded(startTime, NULL, timeBudget))
 			{
 				goto end;
 			}
@@ -700,12 +711,18 @@ DeleteExpiredRowsForIndexCore(char *tableName, TtlIndexEntry *indexEntry, int64
 		argCount++;
 	}
 
+	bool useDescendingSort = EnableTTLDescSort &&
+							 EnableIndexOrderbyPushdown &&
+							 indexEntry->indexIsOrdered;
+
 	/* Fetch the entries to be deleted in descending order if the index is orderd */
-	if (EnableTTLDescSort && indexEntry->indexIsOrdered)
+	if (useDescendingSort)
 	{
 		appendStringInfo(cmdStrDeleteRows,
-						 " ORDER BY document OPERATOR(%s.<>-|) '{ \"%s\": -1 }'::%s",
-						 ApiInternalSchemaNameV2, indexKey, FullBsonTypeName);
+						 " AND %s.bson_dollar_fullscan(document, '{ \"%s\": -1 }'::%s)"
+						 " ORDER BY %s.bson_orderby(document, '{ \"%s\": -1 }'::%s)",
+						 ApiInternalSchemaNameV2, indexKey, FullBsonTypeName,
+						 ApiCatalogSchemaName, indexKey, FullBsonTypeName);
 	}
 
 	appendStringInfo(cmdStrDeleteRows, " LIMIT %d FOR UPDATE SKIP LOCKED) ",
@@ -770,18 +787,30 @@ DeleteExpiredRowsForIndexCore(char *tableName, TtlIndexEntry *indexEntry, int64
 		SPI_OK_DELETE,
 		TTLPurgerStatementTimeout, TTLPurgerLockTimeout);
 
-	if (true)
+	if (LogTTLProgressActivity)
 	{
-		ereport(LOG,
-				errmsg(
-					"Number of rows deleted: %ld, table = %s, index_id=%lu, batch_size=%d, expiry_cutoff=%ld, has_pfe=%s, statement_timeout=%d, lock_timeout=%d used_hints=%d disabled_seq_scan=%d index_is_ordered=%d",
-					(int64) rowsCount, tableName, indexEntry->indexId,
-					ttlDeleteBatchSize,
-					currentTime - indexExpiryMilliseconds, (argCount == 2) ? "true" :
-					"false",
-					TTLPurgerStatementTimeout, TTLPurgerLockTimeout,
-					useIndexHintsForTTLQuery, disableSeqAndBitmapScan,
-					indexEntry->indexIsOrdered));
+		uint64 shardId = indexEntry->shardId;
+		if (shardId == 0 && strncmp(tableName, "documents_", 10) == 0)
+		{
+			/* Compute the shardId from the table if applicable */
+			char *numEndPointer = NULL;
+			uint64 parsedCollectionId = strtoull(&tableName[10], &numEndPointer, 10);
+			if (parsedCollectionId == indexEntry->collectionId &&
+				numEndPointer != NULL && numEndPointer[0] == '_' &&
+				numEndPointer[1] != '\0')
+			{
+				shardId = strtoull(&numEndPointer[1], &numEndPointer, 10);
+			}
+		}
+
+		elog_unredacted(
+			"Number of rows deleted: %ld, collectionId = %lu, shardId=%lu, index_id=%lu, batch_size=%d, expiry_cutoff=%ld, has_pfe=%d, statement_timeout=%d, lock_timeout=%d used_hints=%d disabled_seq_scan=%d index_is_ordered=%d use_desc_sort=%d",
+			(int64) rowsCount, indexEntry->collectionId,
+			shardId, indexEntry->indexId, ttlDeleteBatchSize,
+			currentTime - indexExpiryMilliseconds, (argCount == 2),
+			TTLPurgerStatementTimeout, TTLPurgerLockTimeout,
+			useIndexHintsForTTLQuery, disableSeqAndBitmapScan,
+			indexEntry->indexIsOrdered, useDescendingSort);
 	}
 
 	if (rowsCount > 0)

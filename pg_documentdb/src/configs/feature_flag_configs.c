@@ -38,6 +38,12 @@ bool IsNativeAuthEnabled = DEFAULT_ENABLE_NATIVE_AUTHENTICATION;
 #define DEFAULT_ENABLE_ROLE_CRUD false
 bool EnableRoleCrud = DEFAULT_ENABLE_ROLE_CRUD;
 
+#define DEFAULT_ENABLE_USERS_ADMIN_DB_CHECK false
+bool EnableUsersAdminDBCheck = DEFAULT_ENABLE_USERS_ADMIN_DB_CHECK;
+
+#define DEFAULT_ENABLE_ROLES_ADMIN_DB_CHECK true
+bool EnableRolesAdminDBCheck = DEFAULT_ENABLE_ROLES_ADMIN_DB_CHECK;
+
 /*
  * SECTION: Vector Search flags
  */
@@ -74,22 +80,18 @@ bool EnableVectorCalculateDefaultSearchParameter =
 #define DEFAULT_USE_NEW_COMPOSITE_INDEX_OPCLASS false
 bool DefaultUseCompositeOpClass = DEFAULT_USE_NEW_COMPOSITE_INDEX_OPCLASS;
 
-#define DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN false
+#define DEFAULT_ENABLE_COMPOSITE_INDEX_PLANNER false
+bool EnableCompositeIndexPlanner = DEFAULT_ENABLE_COMPOSITE_INDEX_PLANNER;
+
+#define DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN true
 bool EnableIndexOrderbyPushdown = DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN;
 
-/* Remove after v109 */
-#define DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY false
-bool EnableIndexOrderbyPushdownLegacy = DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY;
-
+/* Remove in v110 */
 #define DEFAULT_ENABLE_INDEX_ORDERBY_REVERSE true
 bool EnableIndexOrderByReverse = DEFAULT_ENABLE_INDEX_ORDERBY_REVERSE;
 
-#define DEFAULT_ENABLE_INDEX_ONLY_SCAN false
+#define DEFAULT_ENABLE_INDEX_ONLY_SCAN true
 bool EnableIndexOnlyScan = DEFAULT_ENABLE_INDEX_ONLY_SCAN;
-
-/* Remove after v109 */
-#define DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE false
-bool EnableRangeOptimizationForComposite = DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE;
 
 /*
  * SECTION: Planner feature flags
@@ -110,19 +112,31 @@ bool ForceBitmapScanForLookup = DEFAULT_FORCE_BITMAP_SCAN_FOR_LOOKUP;
 #define DEFAULT_LOW_SELECTIVITY_FOR_LOOKUP true
 bool LowSelectivityForLookup = DEFAULT_LOW_SELECTIVITY_FOR_LOOKUP;
 
-/* Remove after v110 */
-#define DEFAULT_ENABLE_RUM_INDEX_SCAN true
-bool EnableRumIndexScan = DEFAULT_ENABLE_RUM_INDEX_SCAN;
+#define DEFAULT_SET_SELECTIVITY_FOR_FULL_SCAN true
+bool SetSelectivityForFullScan = DEFAULT_SET_SELECTIVITY_FOR_FULL_SCAN;
 
 #define DEFAULT_USE_NEW_ELEMMATCH_INDEX_PUSHDOWN false
 bool UseNewElemMatchIndexPushdown = DEFAULT_USE_NEW_ELEMMATCH_INDEX_PUSHDOWN;
 
-/* Can be removed after v110 (keep for a few releases for stability) */
+#define DEFAULT_USE_NEW_ELEMMATCH_INDEX_OPERATOR_ON_PUSHDOWN true
+bool UseNewElemMatchIndexOperatorOnPushdown =
+	DEFAULT_USE_NEW_ELEMMATCH_INDEX_OPERATOR_ON_PUSHDOWN;
+
+/* Can be removed in v110 (keep for a few releases for stability) */
 #define DEFAULT_ENABLE_INSERT_CUSTOM_PLAN true
 bool EnableInsertCustomPlan = DEFAULT_ENABLE_INSERT_CUSTOM_PLAN;
 
 #define DEFAULT_ENABLE_INDEX_PRIORITY_ORDERING true
 bool EnableIndexPriorityOrdering = DEFAULT_ENABLE_INDEX_PRIORITY_ORDERING;
+
+#define DEFAULT_ENABLE_EXPR_LOOKUP_INDEX_PUSHDOWN true
+bool EnableExprLookupIndexPushdown = DEFAULT_ENABLE_EXPR_LOOKUP_INDEX_PUSHDOWN;
+
+#define DEFAULT_ENABLE_UNIFY_PFE_ON_INDEXINFO true
+bool EnableUnifyPfeOnIndexInfo = DEFAULT_ENABLE_UNIFY_PFE_ON_INDEXINFO;
+
+#define DEFAULT_ENABLE_UPDATE_BSON_DOCUMENT true
+bool EnableUpdateBsonDocument = DEFAULT_ENABLE_UPDATE_BSON_DOCUMENT;
 
 
 /*
@@ -138,16 +152,8 @@ bool EnablePrimaryKeyCursorScan = DEFAULT_ENABLE_PRIMARY_KEY_CURSOR_SCAN;
 bool UseFileBasedPersistedCursors = DEFAULT_USE_FILE_BASED_PERSISTED_CURSORS;
 
 /* Remove after v108 */
-#define DEFAULT_USE_LEGACY_NULL_EQUALITY_BEHAVIOR false
-bool UseLegacyNullEqualityBehavior = DEFAULT_USE_LEGACY_NULL_EQUALITY_BEHAVIOR;
-
-/* Remove after v108 */
 #define DEFAULT_ENABLE_INDEX_HINT_SUPPORT true
 bool EnableIndexHintSupport = DEFAULT_ENABLE_INDEX_HINT_SUPPORT;
-
-/* Remove after v109 */
-#define DEFAULT_USE_LEGACY_FORCE_PUSHDOWN_BEHAVIOR false
-bool UseLegacyForcePushdownBehavior = DEFAULT_USE_LEGACY_FORCE_PUSHDOWN_BEHAVIOR;
 
 /* Remove after v109 */
 #define DEFAULT_ENABLE_DELAYED_HOLD_PORTAL true
@@ -181,10 +187,6 @@ bool EnableLookupIdJoinOptimizationOnCollation =
  * SECTION: DML Write Path feature flags
  */
 
-/* Remove after v109 */
-#define DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE false
-bool UseLegacyShardKeyFilterOnUpdate = DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE;
-
 #define DEFAULT_RUM_FAIL_ON_LOST_PATH false
 bool RumFailOnLostPath = DEFAULT_RUM_FAIL_ON_LOST_PATH;
 
@@ -198,10 +200,6 @@ bool RecreateRetryTableOnSharding = DEFAULT_RECREATE_RETRY_TABLE_ON_SHARDING;
 #define DEFAULT_ENABLE_DATA_TABLES_WITHOUT_CREATION_TIME true
 bool EnableDataTableWithoutCreationTime =
 	DEFAULT_ENABLE_DATA_TABLES_WITHOUT_CREATION_TIME;
-
-/* Remove after v108 */
-#define DEFAULT_ENABLE_MULTIPLE_INDEX_BUILDS_PER_RUN true
-bool EnableMultipleIndexBuildsPerRun = DEFAULT_ENABLE_MULTIPLE_INDEX_BUILDS_PER_RUN;
 
 #define DEFAULT_ENABLE_BUCKET_AUTO_STAGE true
 bool EnableBucketAutoStage = DEFAULT_ENABLE_BUCKET_AUTO_STAGE;
@@ -286,17 +284,6 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		NULL, &DisableDollarSupportFuncSelectivity,
 		DEFAULT_DISABLE_DOLLAR_FUNCTION_SELECTIVITY,
 		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
-		psprintf("%s.enableRumIndexScan", newGucPrefix),
-		gettext_noop(
-			"Allow rum index scans."),
-		NULL,
-		&EnableRumIndexScan,
-		DEFAULT_ENABLE_RUM_INDEX_SCAN,
-		PGC_USERSET,
-		0,
-		NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
 		psprintf("%s.enableSchemaValidation", prefix),
@@ -391,15 +378,6 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
-		psprintf("%s.enableMultipleIndexBuildsPerRun", newGucPrefix),
-		gettext_noop(
-			"Whether or not to enable multiple index builds per run."),
-		NULL, &EnableMultipleIndexBuildsPerRun,
-		DEFAULT_ENABLE_MULTIPLE_INDEX_BUILDS_PER_RUN,
-		PGC_USERSET, 0, NULL, NULL, NULL
-		);
-
-	DefineCustomBoolVariable(
 		psprintf("%s.useFileBasedPersistedCursors", newGucPrefix),
 		gettext_noop(
 			"Whether or not to use file based persisted cursors."),
@@ -432,19 +410,19 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
-		psprintf("%s.useLegacyNullEqualityBehavior", newGucPrefix),
-		gettext_noop(
-			"Whether or not to use legacy null equality behavior."),
-		NULL, &UseLegacyNullEqualityBehavior,
-		DEFAULT_USE_LEGACY_NULL_EQUALITY_BEHAVIOR,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
 		psprintf("%s.useNewElemMatchIndexPushdown", newGucPrefix),
 		gettext_noop(
 			"Whether or not to use the new elemMatch index pushdown logic."),
 		NULL, &UseNewElemMatchIndexPushdown,
 		DEFAULT_USE_NEW_ELEMMATCH_INDEX_PUSHDOWN,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.useNewElemMatchIndexOperatorOnPushdown", newGucPrefix),
+		gettext_noop(
+			"Whether or not to use the new elemMatch index operator on pushdown."),
+		NULL, &UseNewElemMatchIndexOperatorOnPushdown,
+		DEFAULT_USE_NEW_ELEMMATCH_INDEX_OPERATOR_ON_PUSHDOWN,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
@@ -472,6 +450,13 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
+		psprintf("%s.setSelectivityForFullScan", newGucPrefix),
+		gettext_noop("Whether or not to set the selectivity for full scans"),
+		NULL, &SetSelectivityForFullScan,
+		DEFAULT_SET_SELECTIVITY_FOR_FULL_SCAN,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
 		psprintf("%s.enableBucketAutoStage", newGucPrefix),
 		gettext_noop(
 			"Whether to enable the $bucketAuto stage."),
@@ -490,8 +475,15 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 	DefineCustomBoolVariable(
 		psprintf("%s.defaultUseCompositeOpClass", newGucPrefix),
 		gettext_noop(
-			"Whether to enable the new experimental composite index opclass for default index creates"),
+			"Whether to enable the new ordered index opclass for default index creates"),
 		NULL, &DefaultUseCompositeOpClass, DEFAULT_USE_NEW_COMPOSITE_INDEX_OPCLASS,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableCompositeIndexPlanner", newGucPrefix),
+		gettext_noop(
+			"Whether to enable the new ordered index opclass planner improvements"),
+		NULL, &EnableCompositeIndexPlanner, DEFAULT_ENABLE_COMPOSITE_INDEX_PLANNER,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
@@ -499,14 +491,6 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		gettext_noop(
 			"Whether to enable the sort on the new experimental composite index opclass"),
 		NULL, &EnableIndexOrderbyPushdown, DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
-		psprintf("%s.enableIndexOrderbyPushdownLegacy", newGucPrefix),
-		gettext_noop(
-			"Whether to enable the prior index sort on the new experimental composite index opclass"),
-		NULL, &EnableIndexOrderbyPushdownLegacy,
-		DEFAULT_ENABLE_INDEX_ORDERBY_PUSHDOWN_LEGACY,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
@@ -521,13 +505,6 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		gettext_noop(
 			"Whether to enable index hint support for index pushdown."),
 		NULL, &EnableIndexHintSupport, DEFAULT_ENABLE_INDEX_HINT_SUPPORT,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
-		psprintf("%s.useLegacyForcePushdownBehavior", newGucPrefix),
-		gettext_noop(
-			"Whether to use legacy force index pushdown behavior."),
-		NULL, &UseLegacyForcePushdownBehavior, DEFAULT_USE_LEGACY_FORCE_PUSHDOWN_BEHAVIOR,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
@@ -560,27 +537,11 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
-		psprintf("%s.enableRangeOptimizationForComposite", newGucPrefix),
-		gettext_noop(
-			"Whether to enable range optimization for composite indexes."),
-		NULL, &EnableRangeOptimizationForComposite,
-		DEFAULT_ENABLE_RANGE_OPTIMIZATION_COMPOSITE,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
 		psprintf("%s.usePgStatsLiveTuplesForCount", newGucPrefix),
 		gettext_noop(
 			"Whether to use pg_stat_all_tables live tuples for count in collStats."),
 		NULL, &UsePgStatsLiveTuplesForCount,
 		DEFAULT_USE_PG_STATS_LIVE_TUPLES_FOR_COUNT,
-		PGC_USERSET, 0, NULL, NULL, NULL);
-
-	DefineCustomBoolVariable(
-		psprintf("%s.useLegacyShardKeyFilterOnUpdate", newGucPrefix),
-		gettext_noop(
-			"Whether or not to use the older style shard key filter on update calls."),
-		NULL, &UseLegacyShardKeyFilterOnUpdate,
-		DEFAULT_USE_LEGACY_SHARD_KEY_FILTER_ON_UPDATE,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
@@ -596,5 +557,40 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		gettext_noop(
 			"Whether to delay holding the portal until we know there is more data to be fetched."),
 		NULL, &EnableDelayedHoldPortal, DEFAULT_ENABLE_DELAYED_HOLD_PORTAL,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableExprLookupIndexPushdown", newGucPrefix),
+		gettext_noop(
+			"Whether to expr and lookup pushdown to the index."),
+		NULL, &EnableExprLookupIndexPushdown, DEFAULT_ENABLE_EXPR_LOOKUP_INDEX_PUSHDOWN,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.unifyPfeOnIndexInfo", newGucPrefix),
+		gettext_noop(
+			"Whether to unify partial filter expressions on index expressions."),
+		NULL, &EnableUnifyPfeOnIndexInfo, DEFAULT_ENABLE_UNIFY_PFE_ON_INDEXINFO,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableUsersAdminDBCheck", newGucPrefix),
+		gettext_noop(
+			"Enables db admin requirement for user CRUD APIs through the data plane."),
+		NULL, &EnableUsersAdminDBCheck, DEFAULT_ENABLE_USERS_ADMIN_DB_CHECK,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableRolesAdminDBCheck", newGucPrefix),
+		gettext_noop(
+			"Enables db admin requirement for role CRUD APIs through the data plane."),
+		NULL, &EnableRolesAdminDBCheck, DEFAULT_ENABLE_ROLES_ADMIN_DB_CHECK,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableUpdateBsonDocument", newGucPrefix),
+		gettext_noop(
+			"Whether to enable the update_bson_document command."),
+		NULL, &EnableUpdateBsonDocument, DEFAULT_ENABLE_UPDATE_BSON_DOCUMENT,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 }

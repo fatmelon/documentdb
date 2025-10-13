@@ -171,7 +171,9 @@ typedef struct
 	int compositePathSpec;
 } BsonGinCompositePathOptions;
 
-
+bool ValidateIndexForQualifierElement(bytea *indexOptions,
+									  pgbsonelement *queryelement,
+									  BsonIndexStrategy strategy);
 bool ValidateIndexForQualifierValue(bytea *indexOptions, Datum queryValue,
 									BsonIndexStrategy
 									strategy);
@@ -194,11 +196,6 @@ typedef struct SortIndexInputDetails
 
 
 struct IndexPath;
-bool CompositeIndexSupportsOrderByPushdown(struct IndexPath *indexPath,
-										   List *sortDetails,
-										   int32_t *maxPathKeySupported,
-										   bool *isReverseOrder,
-										   bool isGroupBy);
 bool CompositeIndexSupportsIndexOnlyScan(const struct IndexPath *indexPath);
 
 int32_t GetCompositeOpClassColumnNumber(const char *currentPath, void *contextOptions,
