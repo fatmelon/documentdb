@@ -55,14 +55,18 @@ RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
 
 # ----------- Gateway Build Stage -----------
 FROM prebuild AS stage
+ARG BASE_IMAGE
 
-ENV RUSTUP_HOME=/home/documentdb/.rustup \
-    CARGO_HOME=/home/documentdb/.cargo \
-    PATH=/home/documentdb/.cargo/bin:$PATH
-
+# Install dependencies (conditionally add software-properties-common unless base is debian:trixie-slim)
 RUN apt-get update; \
-    apt-get install -y --no-install-recommends jq curl sudo git make build-essential openssl pkg-config libssl-dev software-properties-common; \
-    sudo rm -rf /var/lib/apt/lists/*
+    PKGS="jq curl sudo git make build-essential openssl pkg-config libssl-dev"; \
+    if [ "${BASE_IMAGE}" != "debian:trixie-slim" ]; then \
+        PKGS="$PKGS software-properties-common"; \
+    else \
+        echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
+    fi; \
+    apt-get install -y --no-install-recommends $PKGS; \
+    rm -rf /var/lib/apt/lists/*
 
 USER documentdb
 WORKDIR /home/documentdb/code
