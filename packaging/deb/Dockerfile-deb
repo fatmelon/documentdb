@@ -15,6 +15,7 @@ RUN apt-get install -y --no-install-recommends \
     lsb-release \
     ca-certificates \
     locales \
+    # systemtap is needed for rum_core
     systemtap \
     systemtap-sdt-dev \
     python3
