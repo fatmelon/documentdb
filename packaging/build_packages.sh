@@ -117,7 +117,7 @@ DOCKERFILE=""
 OS_VERSION_NUMBER=""
 
 if [[ "$PACKAGE_TYPE" == "deb" ]]; then
-    DOCKERFILE="${script_dir}/packaging/deb/Dockerfile-deb"
+    DOCKERFILE="${script_dir}/packaging/deb/Dokcerfile_gateway_deb"
     case $OS in
         deb11)
             DOCKER_IMAGE="debian:bullseye"

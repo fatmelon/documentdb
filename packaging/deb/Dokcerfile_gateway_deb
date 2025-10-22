@@ -1,0 +1,44 @@
+# Define the base image dynamically
+ARG BASE_IMAGE=rust:slim-bookworm
+FROM ${BASE_IMAGE}
+
+RUN apt-get update; \
+    PKGS="jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2"; \
+    if [ "${BASE_IMAGE}" != "debian:trixie-slim" ]; then \
+        PKGS="$PKGS software-properties-common"; \
+    else \
+        echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
+    fi; \
+    apt-get install -y --no-install-recommends $PKGS; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -ms /bin/bash documentdb -G sudo
+RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
+
+USER documentdb
+WORKDIR /home/documentdb/code
+
+COPY . /home/documentdb/code
+
+RUN /home/documentdb/code/scripts/install_llvm.sh
+
+# RUN rustup default stable
+RUN cargo install cargo-deb
+
+RUN sudo chown -R documentdb:documentdb /home/documentdb/code
+
+WORKDIR /home/documentdb/code/pg_documentdb_gw
+
+RUN CARGO_MANIFEST_DIR=/home/documentdb/code/pg_documentdb_gw cargo build --profile=release-with-symbols
+
+# Create /output directory and set permissions for the documentdb user
+USER root
+RUN mkdir -p /output && chown documentdb:documentdb /output
+USER documentdb
+
+# # Output the .deb file to /output
+# RUN cargo deb --no-build --profile=release-with-symbols --output /output/
+
+# # Default command to keep the container running
+# CMD ["tail", "-f", "/dev/null"]
+CMD ["cargo", "deb", "--no-build", "--profile=release-with-symbols", "--output", "/output/"]

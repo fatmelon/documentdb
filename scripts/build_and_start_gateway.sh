@@ -130,7 +130,7 @@ fi
 cd $scriptDir/../pg_documentdb_gw/
 
 if [ -z "$configFile" ]; then
-    ./target/release-with-symbols/documentdb_gateway
+    /usr/bin/documentdb_gateway
 else
-    ./target/release-with-symbols/documentdb_gateway "$configFile"
+    /usr/bin/documentdb_gateway "$configFile"
 fi

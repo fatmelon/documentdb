@@ -39,6 +39,15 @@ tokio-postgres = { version = "0.7.10", features = [
 serde = { version = "1.0.125", features = ["derive", "rc"] }
 uuid = { version = "1.12.1", features = ["v4"] }
 
+[package.metadata.deb]
+name = "documentdb-gateway"
+maintainer = "Your Name <your.email@example.com>"
+extended-description = "A gateway component for DocumentDB."
+depends = []
+assets = [
+ ["target/release-with-symbols/documentdb_gateway", "usr/bin/", "755"],
+]
+
 [dev-dependencies]
 mongodb = { version = "3.2.0", default-features = false, features = [
     "dns-resolver",
