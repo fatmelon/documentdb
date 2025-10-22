@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu22.04"]' || '["deb11","deb12","deb13"]') }}
+        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu22.04"]' || '["deb11","deb12","deb13","ubuntu22.04","ubuntu24.04"]') }}
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -50,10 +50,12 @@ jobs:
           echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
 
       - name: Build Debian Package
+        if: matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13'
         run: |
           ./packaging/build_packages.sh --os ${{ matrix.os }} --pg 17 --version ${{ env.DOCUMENTDB_VERSION }}
 
       - name: Upload Debian Package as Artifact
+        if: matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13'
         uses: actions/upload-artifact@v4
         with:
           name: archive-${{ matrix.os }}-${{ matrix.arch }}-documentdb-gateway-${{ env.DOCUMENTDB_VERSION }}
