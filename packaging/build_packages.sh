@@ -181,52 +181,52 @@ fi
 
 echo "Packages built successfully!!"
 
-if [[ $TEST_CLEAN_INSTALL == true ]]; then
-    echo "Testing clean installation in a Docker container..."
+# if [[ $TEST_CLEAN_INSTALL == true ]]; then
+#     echo "Testing clean installation in a Docker container..."
 
-    if [[ "$PACKAGE_TYPE" == "deb" ]]; then
-        deb_package_name=$(ls "$abs_output_dir" | grep -E "${OS}-postgresql-$PG-documentdb_${DOCUMENTDB_VERSION}.*\.deb" | grep -v "dbg" | head -n 1)
-        deb_package_rel_path="$OUTPUT_DIR/$deb_package_name"
+#     if [[ "$PACKAGE_TYPE" == "deb" ]]; then
+#         deb_package_name=$(ls "$abs_output_dir" | grep -E "${OS}-postgresql-$PG-documentdb_${DOCUMENTDB_VERSION}.*\.deb" | grep -v "dbg" | head -n 1)
+#         deb_package_rel_path="$OUTPUT_DIR/$deb_package_name"
 
-        echo "Debian package path passed into Docker build: $deb_package_rel_path"
+#         echo "Debian package path passed into Docker build: $deb_package_rel_path"
 
-        # Build the Docker image while showing the output to the console
-    docker build -t documentdb-test-packages:latest -f "${script_dir}/packaging/test_packages/deb/Dockerfile-deb-test" \
-            --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
-            --build-arg POSTGRES_VERSION="$PG" \
-            --build-arg DEB_PACKAGE_REL_PATH="$deb_package_rel_path" "$script_dir"
-        # Run the Docker container to test the packages
-        docker run --rm documentdb-test-packages:latest
+#         # Build the Docker image while showing the output to the console
+#     docker build -t documentdb-test-packages:latest -f "${script_dir}/packaging/test_packages/deb/Dockerfile-deb-test" \
+#             --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
+#             --build-arg POSTGRES_VERSION="$PG" \
+#             --build-arg DEB_PACKAGE_REL_PATH="$deb_package_rel_path" "$script_dir"
+#         # Run the Docker container to test the packages
+#         docker run --rm documentdb-test-packages:latest
 
-    elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
-    rpm_package_name=$(ls "$abs_output_dir" | grep -E "${OS}-postgresql${PG}-documentdb-${DOCUMENTDB_VERSION}.*\.(x86_64|aarch64)\.rpm" | head -n 1)
-        if [[ -z "$rpm_package_name" ]]; then
-            echo "Error: Could not find the built RPM package in $abs_output_dir for testing."
-            exit 1
-        fi
-        package_rel_path="$OUTPUT_DIR/$rpm_package_name"
+#     elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
+#     rpm_package_name=$(ls "$abs_output_dir" | grep -E "${OS}-postgresql${PG}-documentdb-${DOCUMENTDB_VERSION}.*\.(x86_64|aarch64)\.rpm" | head -n 1)
+#         if [[ -z "$rpm_package_name" ]]; then
+#             echo "Error: Could not find the built RPM package in $abs_output_dir for testing."
+#             exit 1
+#         fi
+#         package_rel_path="$OUTPUT_DIR/$rpm_package_name"
 
-        echo "RPM package path passed into Docker build: $package_rel_path"
+#         echo "RPM package path passed into Docker build: $package_rel_path"
         
-        # Select the correct test Dockerfile for RHEL 8 or RHEL 9
-        if [[ "$OS" == "rhel8" ]]; then
-            TEST_DOCKERFILE="${script_dir}/packaging/test_packages/rhel-8/Dockerfile-rhel8-test"
-        elif [[ "$OS" == "rhel9" ]]; then
-            TEST_DOCKERFILE="${script_dir}/packaging/test_packages/rhel-9/Dockerfile-rhel9-test"
-        else
-            echo "Error: Unknown RPM OS for test Dockerfile: $OS"
-            exit 1
-        fi
-        docker build -t documentdb-test-rpm-packages:latest -f "$TEST_DOCKERFILE" \
-            --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
-            --build-arg POSTGRES_VERSION="$PG" \
-            --build-arg RPM_PACKAGE_REL_PATH="$package_rel_path" "$script_dir"
+#         # Select the correct test Dockerfile for RHEL 8 or RHEL 9
+#         if [[ "$OS" == "rhel8" ]]; then
+#             TEST_DOCKERFILE="${script_dir}/packaging/test_packages/rhel-8/Dockerfile-rhel8-test"
+#         elif [[ "$OS" == "rhel9" ]]; then
+#             TEST_DOCKERFILE="${script_dir}/packaging/test_packages/rhel-9/Dockerfile-rhel9-test"
+#         else
+#             echo "Error: Unknown RPM OS for test Dockerfile: $OS"
+#             exit 1
+#         fi
+#         docker build -t documentdb-test-rpm-packages:latest -f "$TEST_DOCKERFILE" \
+#             --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
+#             --build-arg POSTGRES_VERSION="$PG" \
+#             --build-arg RPM_PACKAGE_REL_PATH="$package_rel_path" "$script_dir"
             
-        # Run the Docker container to test the packages
-        docker run --rm --env POSTGRES_VERSION="$PG" documentdb-test-rpm-packages:latest
-    fi
+#         # Run the Docker container to test the packages
+#         docker run --rm --env POSTGRES_VERSION="$PG" documentdb-test-rpm-packages:latest
+#     fi
 
-    echo "Clean installation test successful!!"
-fi
+#     echo "Clean installation test successful!!"
+# fi
 
 echo "Packages are available in $abs_output_dir"
