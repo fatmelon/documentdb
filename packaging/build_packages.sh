@@ -120,13 +120,13 @@ if [[ "$PACKAGE_TYPE" == "deb" ]]; then
     DOCKERFILE="${script_dir}/packaging/deb/Dokcerfile_gateway_deb"
     case $OS in
         deb11)
-            DOCKER_IMAGE="debian:bullseye"
+            DOCKER_IMAGE="rust:slim-bullseye"
             ;;
         deb12)
-            DOCKER_IMAGE="debian:bookworm"
+            DOCKER_IMAGE="rust:slim-bookworm"
             ;;
         deb13)
-            DOCKER_IMAGE="debian:trixie"
+            DOCKER_IMAGE="rust:slim-trixie"
             ;;
         ubuntu22.04)
             DOCKER_IMAGE="ubuntu:22.04"

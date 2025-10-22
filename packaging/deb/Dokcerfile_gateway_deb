@@ -1,16 +1,22 @@
 # Define the base image dynamically
 ARG BASE_IMAGE=rust:slim-bookworm
 FROM ${BASE_IMAGE}
+ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update; \
     PKGS="jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2"; \
-    if [ "${BASE_IMAGE}" != "debian:trixie-slim" ]; then \
+    if [ "${BASE_IMAGE}" != "rust:slim-trixie" ]; then \
         PKGS="$PKGS software-properties-common"; \
     else \
         echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
     fi; \
     apt-get install -y --no-install-recommends $PKGS; \
     rm -rf /var/lib/apt/lists/*
+
+RUN if [ "${BASE_IMAGE}" == "ubuntu:22.04" || "${BASE_IMAGE}" == "ubuntu:24.04" ]; then \
+        curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path --default-toolchain stable; \
+        rustup default stable; \
+    fi
 
 RUN useradd -ms /bin/bash documentdb -G sudo
 RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
