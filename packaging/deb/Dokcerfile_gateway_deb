@@ -13,13 +13,16 @@ RUN apt-get update; \
     apt-get install -y --no-install-recommends $PKGS; \
     rm -rf /var/lib/apt/lists/*
 
-RUN if [ "${BASE_IMAGE}" == "ubuntu:22.04" || "${BASE_IMAGE}" == "ubuntu:24.04" ]; then \
-        curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path --default-toolchain stable; \
-        rustup default stable; \
-    fi
+# RUN if [ "${BASE_IMAGE}" == "ubuntu:22.04" || "${BASE_IMAGE}" == "ubuntu:24.04" ]; then \
+#         curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path --default-toolchain stable; \
+#         rustup default stable; \
+#     fi
 
-RUN useradd -ms /bin/bash documentdb -G sudo
-RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
+# RUN useradd -ms /bin/bash documentdb -G sudo
+# RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
+
+RUN id -u documentdb &>/dev/null && echo "documentdb ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask || useradd -ms /bin/bash documentdb -G sudo
+
 
 USER documentdb
 WORKDIR /home/documentdb/code

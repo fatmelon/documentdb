@@ -161,6 +161,7 @@ echo "Output directory: $abs_output_dir"
 
 # Create the output directory if it doesn't exist
 mkdir -p "$abs_output_dir"
+chmod 777 "$abs_output_dir"
 
 # Build the Docker image while showing the output to the console
 if [[ "$PACKAGE_TYPE" == "deb" ]]; then

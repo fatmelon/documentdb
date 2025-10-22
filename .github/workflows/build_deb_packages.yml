@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu22.04"]' || '["deb11","deb12","deb13","ubuntu22.04","ubuntu24.04"]') }}
+        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu22.04"]' || '["deb11","deb12","deb13"]') }}
         arch: [amd64, arm64]
         include:
           - arch: amd64
