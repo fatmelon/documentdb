@@ -24,7 +24,7 @@ permissions:
 jobs:
   build-deb-packages:
     runs-on: ${{ matrix.runner }}
-    name: Deb packages for ${{ matrix.os }}-${{ matrix.arch }}-pg${{ matrix.pg_version }}
+    name: Deb packages for ${{ matrix.os }}-${{ matrix.arch }}
     if: github.event.pull_request.draft == false
     strategy:
       fail-fast: false
@@ -36,7 +36,6 @@ jobs:
             runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
-        pg_version: ${{ fromJson(github.event_name == 'pull_request' && '["17"]' || '["16","17"]') }}
 
     steps:
       - name: Checkout repository
@@ -52,12 +51,12 @@ jobs:
 
       - name: Build Debian Package
         run: |
-          ./packaging/build_packages.sh --os ${{ matrix.os }} --pg ${{ matrix.pg_version }} --version ${{ env.DOCUMENTDB_VERSION }}
+          ./packaging/build_packages.sh --os ${{ matrix.os }} --pg 17 --version ${{ env.DOCUMENTDB_VERSION }}
 
       - name: Upload Debian Package as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: archive-${{ matrix.os }}-${{ matrix.arch }}-pg${{ matrix.pg_version }}-documentdb-${{ env.DOCUMENTDB_VERSION }}
+          name: archive-gateway-${{ matrix.os }}-${{ matrix.arch }}-documentdb-${{ env.DOCUMENTDB_VERSION }}
           path: |
             packaging/*.deb
           retention-days: 7

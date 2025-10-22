@@ -18,8 +18,11 @@ RUN apt-get update; \
 #         rustup default stable; \
 #     fi
 
+# RUN useradd -ms /bin/bash documentdb -G sudo
+# RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
+
 RUN useradd -ms /bin/bash documentdb -G sudo
-RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
+RUN mkdir -p /etc/sudoers.d && echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/no-pass-ask && chmod 0440 /etc/sudoers.d/no-pass-ask
 
 USER documentdb
 WORKDIR /home/documentdb/code
