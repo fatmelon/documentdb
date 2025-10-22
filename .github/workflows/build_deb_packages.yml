@@ -36,6 +36,7 @@ jobs:
             runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
+        pg_version: ${{ fromJson(github.event_name == 'pull_request' && '["17"]' || '["16","17"]') }}
 
     steps:
       - name: Checkout repository
@@ -145,12 +146,12 @@ jobs:
       #       ghcr.io/${{ github.repository }}/documentdb-oss:PG${{ matrix.pg_version }}-${{ matrix.arch }}-${{ env.DOCUMENTDB_VERSION }}
 
       - name: Build Gateway Debian Package
-        if: matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13'
+        if: (matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13') && matrix.pg_version == '17'
         run: |
           ./packaging/build_gateway_packages.sh --os ${{ matrix.os }} --pg 17 --version ${{ env.DOCUMENTDB_VERSION }}
 
       - name: Upload Gateway Debian Package as Artifact
-        if: matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13'
+        if: (matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13') && matrix.pg_version == '17'
         uses: actions/upload-artifact@v4
         with:
           name: archive-${{ matrix.os }}-${{ matrix.arch }}-documentdb-gateway-${{ env.DOCUMENTDB_VERSION }}
