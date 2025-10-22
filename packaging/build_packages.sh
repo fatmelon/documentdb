@@ -114,24 +114,19 @@ fi
 
 # Set the appropriate Docker image and configuration based on the OS
 DOCKERFILE=""
-GATEWAY_DOCKERFILE=""
 OS_VERSION_NUMBER=""
 
 if [[ "$PACKAGE_TYPE" == "deb" ]]; then
     DOCKERFILE="${script_dir}/packaging/deb/Dockerfile-deb"
-    GATEWAY_DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
     case $OS in
         deb11)
             DOCKER_IMAGE="debian:bullseye"
-            GATEWAY_DOCKER_IMAGE="rust:slim-bullseye"
             ;;
         deb12)
             DOCKER_IMAGE="debian:bookworm"
-            GATEWAY_DOCKER_IMAGE="rust:slim-bookworm"
             ;;
         deb13)
             DOCKER_IMAGE="debian:trixie"
-            GATEWAY_DOCKER_IMAGE="rust:slim-trixie"
             ;;
         ubuntu22.04)
             DOCKER_IMAGE="ubuntu:22.04"
@@ -166,7 +161,6 @@ echo "Output directory: $abs_output_dir"
 
 # Create the output directory if it doesn't exist
 mkdir -p "$abs_output_dir"
-chmod 777 "$abs_output_dir"
 
 # Build the Docker image while showing the output to the console
 if [[ "$PACKAGE_TYPE" == "deb" ]]; then
@@ -236,25 +230,3 @@ if [[ $TEST_CLEAN_INSTALL == true ]]; then
 fi
 
 echo "Packages are available in $abs_output_dir"
-
-
-
-echo "Building Gateway $PACKAGE_TYPE packages for OS: $OS, DOCUMENTDB version: $DOCUMENTDB_VERSION"
-echo "Output directory: $abs_output_dir"
-
-# Build the Docker image while showing the output to the console
-if [[ "$PACKAGE_TYPE" == "deb" ]]; then
-    docker build -t "$TAG" -f "$GATEWAY_DOCKERFILE" \
-        --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
-        --build-arg DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" "$script_dir"
-    # Run the Docker container to build the packages
-    docker run --rm --env OS="$OS" --env POSTGRES_VERSION="$PG" --env DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" -v "$abs_output_dir:/output" "$TAG"
-elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
-    docker build -t "$TAG" -f "$GATEWAY_DOCKERFILE" \
-        --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
-        --build-arg DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" "$script_dir"
-    # Run the Docker container to build the packages
-    docker run --rm --env OS="$OS" --env POSTGRES_VERSION="$PG" --env DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" -v "$abs_output_dir:/output" "$TAG"
-fi
-
-echo "Gateway Packages built successfully!!"
