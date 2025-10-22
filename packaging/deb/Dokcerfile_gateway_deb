@@ -3,14 +3,19 @@ ARG BASE_IMAGE=rust:slim-bookworm
 FROM ${BASE_IMAGE}
 ARG DEBIAN_FRONTEND=noninteractive
 
+# RUN apt-get update; \
+#     PKGS="jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2"; \
+#     if [ "${BASE_IMAGE}" != "rust:slim-trixie" ]; then \
+#         PKGS="$PKGS software-properties-common"; \
+#     else \
+#         echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
+#     fi; \
+#     apt-get install -y --no-install-recommends $PKGS; \
+#     rm -rf /var/lib/apt/lists/*
+
+
 RUN apt-get update; \
-    PKGS="jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2"; \
-    if [ "${BASE_IMAGE}" != "rust:slim-trixie" ]; then \
-        PKGS="$PKGS software-properties-common"; \
-    else \
-        echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
-    fi; \
-    apt-get install -y --no-install-recommends $PKGS; \
+    apt-get install -y --no-install-recommends jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2; \
     rm -rf /var/lib/apt/lists/*
 
 # RUN if [ "${BASE_IMAGE}" == "ubuntu:22.04" || "${BASE_IMAGE}" == "ubuntu:24.04" ]; then \
@@ -18,17 +23,27 @@ RUN apt-get update; \
 #         rustup default stable; \
 #     fi
 
+RUN apt-get update; \
+    if [ "${BASE_IMAGE}" != "rust:slim-trixie" ]; then \
+        apt-get install -y --no-install-recommends software-properties-common; \
+    else \
+        echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+
 # RUN useradd -ms /bin/bash documentdb -G sudo
 # RUN echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" >> /etc/sudoers.d/no-pass-ask
 
 RUN useradd -ms /bin/bash documentdb -G sudo
-RUN mkdir -p /etc/sudoers.d && echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/no-pass-ask && chmod 0440 /etc/sudoers.d/no-pass-ask
+RUN mkdir -p /etc/sudoers.d && echo "%sudo ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/no-pass-ask
 
 USER documentdb
 WORKDIR /home/documentdb/code
 
 COPY . /home/documentdb/code
 
+RUN sudo chmod +x /home/documentdb/code/scripts/*.sh
 RUN /home/documentdb/code/scripts/install_llvm.sh
 
 # RUN rustup default stable
