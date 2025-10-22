@@ -16,7 +16,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 
 RUN apt-get update; \
-    apt-get install -y --no-install-recommends jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2; \
+    apt-get install -y --no-install-recommends software-properties-common jq curl sudo git make wget build-essential openssl pkg-config libssl-dev ca-certificates lsb-release gnupg2; \
     rm -rf /var/lib/apt/lists/*
 
 # RUN if [ "${BASE_IMAGE}" == "ubuntu:22.04" || "${BASE_IMAGE}" == "ubuntu:24.04" ]; then \
@@ -24,13 +24,13 @@ RUN apt-get update; \
 #         rustup default stable; \
 #     fi
 
-RUN apt-get update; \
-    if [ "$BASE_IMAGE" != "rust:slim-trixie" ]; then \
-        apt-get install -y --no-install-recommends software-properties-common; \
-    else \
-        echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
+# RUN apt-get update; \
+#     if [ "$BASE_IMAGE" != "ubuntu:24.04" ]; then \
+#         apt-get install -y --no-install-recommends software-properties-common; \
+#     else \
+#         echo "Skipping software-properties-common for base ${BASE_IMAGE}"; \
+#     fi; \
+#     rm -rf /var/lib/apt/lists/*
 
 
 # RUN useradd -ms /bin/bash documentdb -G sudo
@@ -46,6 +46,16 @@ COPY . /home/documentdb/code
 
 RUN sudo chmod +x /home/documentdb/code/scripts/*.sh
 RUN /home/documentdb/code/scripts/install_llvm.sh
+
+# Install rustup (which includes rustc and cargo) in user directory
+ENV RUSTUP_HOME=/home/documentdb/.rustup
+ENV CARGO_HOME=/home/documentdb/.cargo
+RUN mkdir -p $RUSTUP_HOME && mkdir -p $CARGO_HOME
+ENV PATH=$PATH:$CARGO_HOME/bin
+
+# RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path --default-toolchain stable
+RUN /home/documentdb/code/scripts/install_rustup.sh --install-toolchain
+# RUN rustup default stable
 
 # RUN rustup default stable
 RUN cargo install cargo-deb

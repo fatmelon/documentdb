@@ -117,22 +117,26 @@ DOCKERFILE=""
 OS_VERSION_NUMBER=""
 
 if [[ "$PACKAGE_TYPE" == "deb" ]]; then
-    DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
     case $OS in
         deb11)
             DOCKER_IMAGE="rust:slim-bullseye"
+            DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
         deb12)
             DOCKER_IMAGE="rust:slim-bookworm"
+            DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
         deb13)
             DOCKER_IMAGE="rust:slim-trixie"
+            DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
         ubuntu22.04)
             DOCKER_IMAGE="ubuntu:22.04"
+            DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_ubuntu"
             ;;
         ubuntu24.04)
             DOCKER_IMAGE="ubuntu:24.04"
+            DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_ubuntu"
             ;;
     esac
 elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
