@@ -49,12 +49,12 @@ jobs:
           echo "Extracted Version: $DOCUMENTDB_VERSION"
           echo "DOCUMENTDB_VERSION=$DOCUMENTDB_VERSION" >> $GITHUB_ENV
 
-      - name: Build Debian Package
+      - name: Build Gateway Debian Package
         if: matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13'
         run: |
-          ./packaging/build_packages.sh --os ${{ matrix.os }} --pg 17 --version ${{ env.DOCUMENTDB_VERSION }}
+          ./packaging/build_gateway_packages.sh --os ${{ matrix.os }} --pg 17 --version ${{ env.DOCUMENTDB_VERSION }}
 
-      - name: Upload Debian Package as Artifact
+      - name: Upload Gateway Debian Package as Artifact
         if: matrix.os == 'deb11' || matrix.os == 'deb12' || matrix.os == 'deb13'
         uses: actions/upload-artifact@v4
         with:
