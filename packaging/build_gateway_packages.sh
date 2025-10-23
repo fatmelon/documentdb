@@ -94,24 +94,6 @@ if [[ -z "$OS" ]]; then
     exit 1
 fi
 
-if [[ -z "$PG" ]]; then
-    echo "Error: --pg is required."
-    show_help
-    exit 1
-fi
-
-# get the version from control file
-if [[ -z "$DOCUMENTDB_VERSION" ]]; then
-    DOCUMENTDB_VERSION=$(grep -E "^default_version" pg_documentdb_core/documentdb_core.control | sed -E "s/.*'([0-9]+\.[0-9]+-[0-9]+)'.*/\1/")
-    DOCUMENTDB_VERSION=$(echo $DOCUMENTDB_VERSION | sed "s/-/./g")
-    echo "DOCUMENTDB_VERSION extracted from control file: $DOCUMENTDB_VERSION"
-    if [[ -z "$DOCUMENTDB_VERSION" ]]; then
-        echo "Error: --version is required and could not be found in the control file."
-        show_help
-        exit 1
-    fi
-fi
-
 # Set the appropriate Docker image and configuration based on the OS
 DOCKERFILE=""
 OS_VERSION_NUMBER=""
