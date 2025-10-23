@@ -153,6 +153,31 @@ fi
 
 echo "Packages built successfully!!"
 
-# TODO: Implement test clean install
+if [[ $TEST_CLEAN_INSTALL == true ]]; then
+    echo "Testing clean installation in a Docker container..."
+
+    if [[ "$PACKAGE_TYPE" == "deb" ]]; then
+        deb_package_name=$(ls "$abs_output_dir" | grep -E "${OS}-postgresql-$PG-documentdb_${DOCUMENTDB_VERSION}.*\.deb" | grep -v "dbg" | head -n 1)
+        deb_package_rel_path="$OUTPUT_DIR/$deb_package_name"
+        gateway_package_name=$(ls "$abs_output_dir" | grep -E "documentdb-gateway_${DOCUMENTDB_VERSION}.*\.deb" | grep -v "dbg" | head -n 1)
+        gateway_package_rel_path="$OUTPUT_DIR/$gateway_package_name"
+
+        echo "Debian package path passed into Docker build: $deb_package_rel_path"
+
+        # Build the Docker image while showing the output to the console
+        docker build -t documentdb-test-gateway-packages:latest -f "${script_dir}/packaging/test_packages/deb/Dockerfile-deb-test" \
+            --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
+            --build-arg POSTGRES_VERSION="$PG" \
+            --build-arg DEB_PACKAGE_REL_PATH="$deb_package_rel_path" \
+            --build-arg GATEWAY_PACKAGE_PATH="$gateway_package_rel_path" "$script_dir"
+        # Run the Docker container to test the packages
+        docker run --rm documentdb-test-gateway-packages:latest
+
+    elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
+        echo "RPM package installation test is not yet implemented."
+    fi
+
+    echo "Clean installation test successful!!"
+fi
 
 echo "Packages are available in $abs_output_dir"
