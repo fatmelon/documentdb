@@ -32,11 +32,39 @@ RUN apt-get update; \
 # Minimal locale env (others inherit)
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
+# # Add PostgreSQL upstream repo (modern keyring usage) + install extensions
+# RUN install -d -m 0755 /etc/apt/keyrings; \
+#     wget -qO /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+#     echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main ${POSTGRES_VERSION}" \
+#         > /etc/apt/sources.list.d/pgdg.list; \
+#     apt-get update; \
+#     apt-get install -y --no-install-recommends \
+#         postgresql-${POSTGRES_VERSION} \
+#         postgresql-${POSTGRES_VERSION}-cron \
+#         postgresql-${POSTGRES_VERSION}-pgvector \
+#         postgresql-${POSTGRES_VERSION}-postgis-3 \
+#         postgresql-${POSTGRES_VERSION}-rum \
+#     ; \
+#     rm -rf /var/lib/apt/lists/*
+
+# # Add PostgreSQL upstream repo (modern keyring usage) + install extensions
+# RUN install -d /usr/share/postgresql-common/pgdg; \
+#     curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+#     . /etc/os-release; \
+#     sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${POSTGRES_VERSION}-pgdg main' > /etc/apt/sources.list.d/pgdg.list"; \
+#     apt-get update; \
+#     apt-get install -y --no-install-recommends \
+#         postgresql-${POSTGRES_VERSION} \
+#         postgresql-${POSTGRES_VERSION}-cron \
+#         postgresql-${POSTGRES_VERSION}-pgvector \
+#         postgresql-${POSTGRES_VERSION}-postgis-3 \
+#         postgresql-${POSTGRES_VERSION}-rum \
+#     ; \
+#     rm -rf /var/lib/apt/lists/*
+
 # Add PostgreSQL upstream repo (modern keyring usage) + install extensions
-RUN install -d -m 0755 /etc/apt/keyrings; \
-    wget -qO /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
-    echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main ${POSTGRES_VERSION}" \
-        > /etc/apt/sources.list.d/pgdg.list; \
+RUN apt install -y postgresql-common; \
+    /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         postgresql-${POSTGRES_VERSION} \
