@@ -102,23 +102,28 @@ if [[ "$PACKAGE_TYPE" == "deb" ]]; then
     case $OS in
         deb11)
             DOCKER_IMAGE="rust:slim-bullseye"
+            TEST_DOCKER_IMAGE="debian:bullseye-slim"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
         deb12)
             DOCKER_IMAGE="rust:slim-bookworm"
+            TEST_DOCKER_IMAGE="debian:bookworm-slim"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
         deb13)
             DOCKER_IMAGE="rust:slim-trixie"
+            TEST_DOCKER_IMAGE="debian:trixie-slim"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
         # Ubuntu images need to install rust manually
         ubuntu22.04)
             DOCKER_IMAGE="ubuntu:22.04"
+            TEST_DOCKER_IMAGE="ubuntu:22.04"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_ubuntu"
             ;;
         ubuntu24.04)
             DOCKER_IMAGE="ubuntu:24.04"
+            TEST_DOCKER_IMAGE="ubuntu:24.04"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_ubuntu"
             ;;
     esac
@@ -167,7 +172,7 @@ if [[ $TEST_CLEAN_INSTALL == true ]]; then
 
         # Build the Docker image while showing the output to the console
         docker build -t documentdb-test-gateway-packages:latest -f "${script_dir}/packaging/test_packages/deb/Dockerfile-deb-test" \
-            --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
+            --build-arg BASE_IMAGE="$TEST_DOCKER_IMAGE" \
             --build-arg POSTGRES_VERSION="$PG" \
             --build-arg DEB_PACKAGE_REL_PATH="$deb_package_rel_path" \
             --build-arg GATEWAY_PACKAGE_PATH="$gateway_package_rel_path" "$script_dir"
