@@ -41,7 +41,7 @@ uuid = { version = "1.12.1", features = ["v4"] }
 
 [package.metadata.deb]
 name = "documentdb-gateway"
-maintainer = "Your Name <your.email@example.com>"
+maintainer = "yangqiao@microsoft.com"
 extended-description = "A gateway component for DocumentDB."
 depends = []
 assets = [

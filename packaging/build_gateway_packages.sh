@@ -130,6 +130,7 @@ if [[ "$PACKAGE_TYPE" == "deb" ]]; then
             DOCKER_IMAGE="rust:slim-trixie"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_deb"
             ;;
+        # Ubuntu images need to install rust manually
         ubuntu22.04)
             DOCKER_IMAGE="ubuntu:22.04"
             DOCKERFILE="${script_dir}/packaging/deb/Dockerfile_gateway_ubuntu"
@@ -140,20 +141,8 @@ if [[ "$PACKAGE_TYPE" == "deb" ]]; then
             ;;
     esac
 elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
-    case $OS in
-        rhel8)
-            DOCKERFILE="${script_dir}/packaging/rpm/rhel-8/Dockerfile-rhel8"
-            DOCKER_IMAGE="rockylinux:8"
-            ;;
-        rhel9)
-            DOCKERFILE="${script_dir}/packaging/rpm/rhel-9/Dockerfile-rhel9"
-            DOCKER_IMAGE="rockylinux:9"
-            ;;
-        *)
-            echo "Error: Invalid OS specified for RPM build: $OS"
-            exit 1
-            ;;
-    esac
+    # TODO: Implement RPM package building
+    echo "Building RPM packages is not yet implemented."
 fi
 
 TAG=documentdb-build-packages-$OS-pg$PG:latest
@@ -176,14 +165,12 @@ if [[ "$PACKAGE_TYPE" == "deb" ]]; then
     # Run the Docker container to build the packages
     docker run --rm --env OS="$OS" --env POSTGRES_VERSION="$PG" --env DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" -v "$abs_output_dir:/output" "$TAG"
 elif [[ "$PACKAGE_TYPE" == "rpm" ]]; then
-    docker build -t "$TAG" -f "$DOCKERFILE" \
-        --build-arg BASE_IMAGE="$DOCKER_IMAGE" \
-        --build-arg POSTGRES_VERSION="$PG" \
-        --build-arg DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" "$script_dir"
-    # Run the Docker container to build the packages
-    docker run --rm --env OS="$OS" --env POSTGRES_VERSION="$PG" --env DOCUMENTDB_VERSION="$DOCUMENTDB_VERSION" -v "$abs_output_dir:/output" "$TAG"
+    echo "Building RPM packages is not yet implemented."
+    # TODO: Implement RPM package building
 fi
 
 echo "Packages built successfully!!"
+
+# TODO: Implement test clean install
 
 echo "Packages are available in $abs_output_dir"
