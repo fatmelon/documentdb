@@ -1,16 +1,9 @@
 # ----------- Prebuild Stage -----------
 ARG BASE_IMAGE=ubuntu:22.04
-ARG DEBIAN_FRONTEND=noninteractive
-ARG POSTGRES_VERSION=16
-# REQUIRED: Path (relative to build context) to the pre-built DocumentDB .deb package.
-# Must be provided via --build-arg DEB_PACKAGE_REL_PATH=path/to/package.deb at docker build time.
-# No default is intentionally set to avoid accidentally picking a stale or wrong package.
-ARG DEB_PACKAGE_REL_PATH
-ARG GATEWAY_PACKAGE_PATH
 
 FROM ${BASE_IMAGE} AS prebuild
-ARG DEBIAN_FRONTEND
-ARG POSTGRES_VERSION
+ARG DEBIAN_FRONTEND=noninteractive
+ARG POSTGRES_VERSION=17
 ARG DEB_PACKAGE_REL_PATH
 ARG GATEWAY_PACKAGE_PATH
 # Fail fast if caller did not pass the required deb path build arg.

@@ -1,5 +1,6 @@
 [package]
 name = "documentdb_gateway"
+description = "A gateway component for DocumentDB."
 version = "0.1.0"
 edition = "2021"
 
@@ -40,9 +41,8 @@ serde = { version = "1.0.125", features = ["derive", "rc"] }
 uuid = { version = "1.12.1", features = ["v4"] }
 
 [package.metadata.deb]
-name = "documentdb-gateway"
+name = "documentdb_gateway"
 maintainer = "yangqiao@microsoft.com"
-extended-description = "A gateway component for DocumentDB."
 depends = []
 assets = [
  ["target/release-with-symbols/documentdb_gateway", "usr/bin/", "755"],
