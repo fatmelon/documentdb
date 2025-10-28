@@ -165,7 +165,7 @@ if [[ $TEST_CLEAN_INSTALL == true ]]; then
         ls "$abs_output_dir"
         deb_package_name=$(ls "$abs_output_dir" | grep -E "${OS}-postgresql-$PG-documentdb_${DOCUMENTDB_VERSION}.*\.deb" | grep -v "dbg" | head -n 1)
         deb_package_rel_path="$OUTPUT_DIR/$deb_package_name"
-        gateway_package_name=$(ls "$abs_output_dir" | grep -E "^documentdb-gateway_.*\.deb" | grep -v "dbg" | head -n 1)
+        gateway_package_name=$(ls "$abs_output_dir" | grep -E "^documentdb_gateway_.*\.deb" | grep -v "dbg" | head -n 1)
         gateway_package_rel_path="$OUTPUT_DIR/$gateway_package_name"
 
         echo "Debian package path passed into Docker build: $deb_package_rel_path"
