@@ -6,6 +6,8 @@
  *-------------------------------------------------------------------------
  */
 
+pub mod read_concern;
+pub mod read_preference;
 pub mod request_tracker;
 
 use std::{
@@ -14,6 +16,8 @@ use std::{
 };
 
 use bson::{spec::ElementType, Document, RawBsonRef, RawDocument, RawDocumentBuf};
+use read_concern::ReadConcern;
+use read_preference::ReadPreference;
 use tokio_postgres::IsolationLevel;
 
 use crate::{
@@ -47,6 +51,7 @@ pub struct RequestInfo<'a> {
     db: Option<&'a str>,
     collection: Option<&'a str>,
     pub session_id: Option<&'a [u8]>,
+    read_concern: ReadConcern,
 }
 
 impl RequestInfo<'_> {
@@ -57,6 +62,7 @@ impl RequestInfo<'_> {
             db: None,
             collection: None,
             session_id: None,
+            read_concern: ReadConcern::default(),
         }
     }
 
@@ -71,6 +77,10 @@ impl RequestInfo<'_> {
         self.db.ok_or(DocumentDBError::bad_value(
             "Expected $db to be present".to_string(),
         ))
+    }
+
+    pub fn read_concern(&self) -> &ReadConcern {
+        &self.read_concern
     }
 }
 
@@ -88,6 +98,7 @@ pub enum RequestType {
     Create,
     CreateIndex,
     CreateIndexes,
+    CreateRole,
     CreateUser,
     CurrentOp,
     DbStats,
@@ -96,6 +107,7 @@ pub enum RequestType {
     Drop,
     DropDatabase,
     DropIndexes,
+    DropRole,
     DropUser,
     EndSessions,
     Explain,
@@ -122,11 +134,13 @@ pub enum RequestType {
     ReIndex,
     RenameCollection,
     ReshardCollection,
+    RolesInfo,
     SaslContinue,
     SaslStart,
     ShardCollection,
     UnshardCollection,
     Update,
+    UpdateRole,
     UpdateUser,
     UsersInfo,
     Validate,
@@ -167,6 +181,7 @@ impl FromStr for RequestType {
             "create" => Ok(RequestType::Create),
             "createIndex" => Ok(RequestType::CreateIndex),
             "createIndexes" => Ok(RequestType::CreateIndexes),
+            "createRole" => Ok(RequestType::CreateRole),
             "createUser" => Ok(RequestType::CreateUser),
             "currentOp" => Ok(RequestType::CurrentOp),
             "dbstats" => Ok(RequestType::DbStats),
@@ -176,6 +191,7 @@ impl FromStr for RequestType {
             "drop" => Ok(RequestType::Drop),
             "dropDatabase" => Ok(RequestType::DropDatabase),
             "dropIndexes" => Ok(RequestType::DropIndexes),
+            "dropRole" => Ok(RequestType::DropRole),
             "dropUser" => Ok(RequestType::DropUser),
             "endSessions" => Ok(RequestType::EndSessions),
             "explain" => Ok(RequestType::Explain),
@@ -205,11 +221,13 @@ impl FromStr for RequestType {
             "reIndex" => Ok(RequestType::ReIndex),
             "renameCollection" => Ok(RequestType::RenameCollection),
             "reshardCollection" => Ok(RequestType::ReshardCollection),
+            "rolesInfo" => Ok(RequestType::RolesInfo),
             "saslContinue" => Ok(RequestType::SaslContinue),
             "saslStart" => Ok(RequestType::SaslStart),
             "shardCollection" => Ok(RequestType::ShardCollection),
             "unshardCollection" => Ok(RequestType::UnshardCollection),
             "update" => Ok(RequestType::Update),
+            "updateRole" => Ok(RequestType::UpdateRole),
             "updateUser" => Ok(RequestType::UpdateUser),
             "usersInfo" => Ok(RequestType::UsersInfo),
             "validate" => Ok(RequestType::Validate),
@@ -326,6 +344,7 @@ impl<'a> Request<'a> {
         let mut start_transaction = false;
         let mut isolation_level = None;
         let mut collection = None;
+        let mut read_concern = ReadConcern::default();
 
         let collection_field = self.collection_field();
         for entry in self.document() {
@@ -370,18 +389,20 @@ impl<'a> Request<'a> {
                     )))?;
                 }
                 "readConcern" => {
-                    if v.as_document()
+                    let level = v
+                        .as_document()
                         .ok_or(DocumentDBError::bad_value(format!(
                             "Expected readConcern to be a document but got {:?}",
                             v.element_type()
                         )))?
                         .get_str("level")
-                        .unwrap_or("")
-                        == "snapshot"
-                    {
+                        .unwrap_or("");
+                    read_concern = ReadConcern::from_str(level).unwrap_or(ReadConcern::default());
+                    if let ReadConcern::Snapshot = read_concern {
                         isolation_level = Some(IsolationLevel::RepeatableRead)
                     }
                 }
+                "$readPreference" => ReadPreference::parse(v.as_document())?,
                 key if collection_field.contains(&key) => {
                     // Aggregate needs special handling because having '1' as a collection is valid
                     collection = if collection_field[0] == "aggregate" {
@@ -417,6 +438,7 @@ impl<'a> Request<'a> {
             session_id,
             transaction_info,
             db,
+            read_concern,
         })
     }
 

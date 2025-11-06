@@ -1024,6 +1024,8 @@ extension_rumrescan_core(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 			outerScanState->innerScan->xs_want_itup = scan->xs_want_itup;
 		}
 
+		outerScanState->innerScan->ignore_killed_tuples = scan->ignore_killed_tuples;
+		outerScanState->innerScan->kill_prior_tuple = scan->kill_prior_tuple;
 		coreRoutine->amrescan(outerScanState->innerScan,
 							  innerScanKey, nInnerScanKeys,
 							  innerOrderBy,
@@ -1096,23 +1098,25 @@ extension_amgettuple(IndexScanDesc scan, ScanDirection direction)
 }
 
 
-static bool
+pg_attribute_no_sanitize_alignment() static bool
 GetOneTupleCore(DocumentDBRumIndexState *outerScanState,
 				IndexScanDesc scan, ScanDirection direction,
 				IndexAmRoutine *coreRoutine)
 {
 	bool result = coreRoutine->amgettuple(outerScanState->innerScan, direction);
+	if (result)
+	{
+		scan->xs_heaptid = outerScanState->innerScan->xs_heaptid;
+		scan->xs_recheck = outerScanState->innerScan->xs_recheck;
+		scan->xs_recheckorderby = outerScanState->innerScan->xs_recheckorderby;
 
-	scan->xs_heaptid = outerScanState->innerScan->xs_heaptid;
-	scan->xs_recheck = outerScanState->innerScan->xs_recheck;
-	scan->xs_recheckorderby = outerScanState->innerScan->xs_recheckorderby;
+		/* Set the pointers to handle order by values */
+		scan->xs_orderbyvals = outerScanState->innerScan->xs_orderbyvals;
+		scan->xs_orderbynulls = outerScanState->innerScan->xs_orderbynulls;
 
-	/* Set the pointers to handle order by values */
-	scan->xs_orderbyvals = outerScanState->innerScan->xs_orderbyvals;
-	scan->xs_orderbynulls = outerScanState->innerScan->xs_orderbynulls;
-
-	scan->xs_itup = outerScanState->innerScan->xs_itup;
-	scan->xs_itupdesc = outerScanState->innerScan->xs_itupdesc;
+		scan->xs_itup = outerScanState->innerScan->xs_itup;
+		scan->xs_itupdesc = outerScanState->innerScan->xs_itupdesc;
+	}
 
 	return result;
 }
@@ -1137,6 +1141,8 @@ extension_rumgettuple_core(IndexScanDesc scan, ScanDirection direction,
 			ereport(ERROR, (errmsg("rumgettuple only supports forward scans")));
 		}
 
+		/* Push this to the inner scan */
+		outerScanState->innerScan->kill_prior_tuple = scan->kill_prior_tuple;
 		if (outerScanState->indexArrayState == NULL)
 		{
 			/* No arrays, or we don't support dedup - just return the basics */
@@ -1160,7 +1166,10 @@ extension_rumgettuple_core(IndexScanDesc scan, ScanDirection direction,
 					outerScanState->numDuplicates++;
 				}
 
-				/* else, get the next tuple */
+				/* else, get the next tuple
+				 * Ensure that we reset kill_prior_tuple since this is the duplicate path.
+				 */
+				outerScanState->innerScan->kill_prior_tuple = false;
 				result = GetOneTupleCore(outerScanState, scan,
 										 outerScanState->scanDirection, coreRoutine);
 			}

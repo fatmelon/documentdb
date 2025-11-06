@@ -38,6 +38,7 @@
 #include "collation/collation.h"
 
 extern bool EnableExprLookupIndexPushdown;
+extern bool EnableValueOnlyIndexTerms;
 
 /* --------------------------------------------------------- */
 /* Top level exports */
@@ -1028,7 +1029,8 @@ ValidateIndexForQualifierElement(bytea *indexOptions, pgbsonelement *filterEleme
  * checks if a path can be pushed to an index given the options for a $in type query.
  */
 bool
-ValidateIndexForQualifierPathForDollarIn(bytea *indexOptions, const StringView *queryPath)
+ValidateIndexForQualifierPathForEquality(bytea *indexOptions, const StringView *queryPath,
+										 BsonIndexStrategy strat)
 {
 	if (indexOptions == NULL)
 	{
@@ -1106,8 +1108,7 @@ ValidateIndexForQualifierPathForDollarIn(bytea *indexOptions, const StringView *
 			int32_t compositeColumnIgnore;
 			bson_value_t unspecifiedValue = { 0 };
 			traverse = GetCompositePathIndexTraverseOption(
-				BSON_INDEX_STRATEGY_DOLLAR_IN, options,
-				queryPath->string,
+				strat, options, queryPath->string,
 				queryPath->length,
 				&unspecifiedValue,
 				&compositeColumnIgnore);
@@ -1147,6 +1148,8 @@ GetIndexTermMetadata(void *indexOptions)
 		StringView pathPrefix = { 0 };
 		bool isWildcard = false;
 		bool isWildcardProjection = false;
+		bool allowValueOnly = false;
+		int32_t truncationLimit = options->indexTermTruncateLimit;
 		if (options->type == IndexOptionsType_SinglePath)
 		{
 			/* For single path indexes, we can elide the index path prefix */
@@ -1168,6 +1171,15 @@ GetIndexTermMetadata(void *indexOptions)
 		{
 			pathPrefix.string = "$";
 			pathPrefix.length = 1;
+			allowValueOnly = EnableValueOnlyIndexTerms;
+			if (allowValueOnly)
+			{
+				/* Since we lose one character on valueOnly scenarios for the path,
+				 * reduce the truncation limit to ensure the overall value stays the same.
+				 */
+				int32_t pathCount = GetCompositeOpClassPathCount(options);
+				truncationLimit -= pathCount;
+			}
 		}
 		else if (options->type == IndexOptionsType_Wildcard)
 		{
@@ -1187,12 +1199,13 @@ GetIndexTermMetadata(void *indexOptions)
 			wildcardIndexTruncatedPathLimit;
 
 		return (IndexTermCreateMetadata) {
-				   .indexTermSizeLimit = options->indexTermTruncateLimit,
+				   .indexTermSizeLimit = truncationLimit,
 				   .wildcardIndexTruncatedPathLimit = wildcardIndexTruncatedPathLimit,
 				   .pathPrefix = pathPrefix,
 				   .isWildcard = isWildcard,
 				   .isWildcardProjection = isWildcardProjection,
-				   .indexVersion = options->version
+				   .indexVersion = options->version,
+				   .allowValueOnly = allowValueOnly
 		};
 	}
 
@@ -1213,7 +1226,7 @@ GetIndexTermMetadata(void *indexOptions)
  * a wildcard, and/or suffix of the given path.
  * The method assumes that the options provided is a BsonGinWildcardProjectionPathOptions
  */
-IndexTraverseOption
+pg_attribute_no_sanitize_alignment() IndexTraverseOption
 GetWildcardProjectionPathIndexTraverseOption(void *contextOptions, const
 											 char *currentPath, uint32_t
 											 currentPathLength,
@@ -1460,7 +1473,7 @@ ValidateWildcardProjectPathSpec(const char *prefix)
  * Here we parse the jsonified path options to build a serialized path
  * structure that is more efficiently parsed during term generation.
  */
-static Size
+pg_attribute_no_sanitize_alignment() static Size
 FillWildcardProjectPathSpec(const char *prefix, void *buffer)
 {
 	if (prefix == NULL)

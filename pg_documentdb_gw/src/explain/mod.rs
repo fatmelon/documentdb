@@ -85,6 +85,7 @@ static AGGREGATION_STAGE_NAME_MAP: Lazy<HashMap<&'static str, AggregationStage>>
             ("WORKER_PARTIAL_AGG", ("$group", None)),
             ("UNIONWITH", ("$unionWith", None)),
             ("DOCUMENTS_AGG", ("$documents", None)),
+            ("COLLSTATS_AGG", ("$collStats", None)),
         ])
     });
 
@@ -979,6 +980,13 @@ fn get_stage_from_plan(
                             return ("DOCUMENTS_AGG".to_owned(), None);
                         }
                     }
+                    "coll_stats_aggregation" => {
+                        if parent_stage.is_some_and(|x| x == "COUNT") {
+                            return ("RECORD_STORE_FAST_COUNT".to_owned(), None);
+                        } else {
+                            return ("COLLSTATS_AGG".to_owned(), None);
+                        }
+                    }
                     _ => {}
                 }
             };
@@ -1366,6 +1374,14 @@ fn query_planner(
 
             if let Some(page_size) = plan.page_size {
                 doc.append("page_size", smallest_from_i64(page_size));
+            }
+
+            if let Some(startup_cost) = plan.startup_cost {
+                doc.append("startupCost", startup_cost);
+            }
+
+            if let Some(total_cost) = plan.total_cost {
+                doc.append("totalCost", total_cost);
             }
 
             if let Some(sort_keys) = plan.sort_keys.as_ref() {
