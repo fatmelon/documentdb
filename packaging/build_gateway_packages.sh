@@ -13,7 +13,7 @@ function show_help {
     echo "  This script builds extension packages (DEB/RPM) using Docker."
     echo ""
     echo "Mandatory Arguments:"
-    echo "  --os                 OS to build packages for. Possible values: [deb11, deb12, ubuntu22.04, ubuntu24.04, rhel8, rhel9]"
+    echo "  --os                 OS to build packages for. Possible values: [deb11, deb12, deb13, ubuntu22.04, ubuntu24.04, rhel8, rhel9]"
     echo "  --pg                 PG version to build packages for. Possible values: [15, 16, 17]"
     echo ""
     echo "Optional Arguments:"
@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
                     PACKAGE_TYPE="rpm"
                     ;;
                 *)
-                    echo "Invalid --os value. Allowed values are [deb11, deb12, ubuntu22.04, ubuntu24.04, rhel8, rhel9]"
+                    echo "Invalid --os value. Allowed values are [deb11, deb12, deb13, ubuntu22.04, ubuntu24.04, rhel8, rhel9]"
                     exit 1
                     ;;
             esac

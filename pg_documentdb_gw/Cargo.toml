@@ -41,7 +41,6 @@ serde = { version = "1.0.125", features = ["derive", "rc"] }
 uuid = { version = "1.12.1", features = ["v4"] }
 
 [package.metadata.deb]
-name = "documentdb_gateway"
 maintainer = "yangqiao@microsoft.com"
 depends = []
 assets = [

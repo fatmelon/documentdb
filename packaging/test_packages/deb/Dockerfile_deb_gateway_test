@@ -95,5 +95,4 @@ USER documentdb
 RUN sudo chown -R documentdb:documentdb /home/documentdb/gateway
 
 WORKDIR /home/documentdb/gateway/scripts
-# ENTRYPOINT ["/bin/bash", "-c", "/home/documentdb/gateway/scripts/emulator_entrypoint.sh \"$@\"", "--"]
 ENTRYPOINT ["/bin/bash", "-c", "/home/documentdb/gateway/scripts/test-gateway-install-entrypoint.sh"]
