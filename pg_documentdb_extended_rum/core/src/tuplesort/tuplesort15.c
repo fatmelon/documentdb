@@ -109,7 +109,6 @@
 #include "commands/tablespace.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
-#include "pg_trace.h"
 #include "utils/datum.h"
 #include "utils/logtape.h"
 #include "utils/lsyscache.h"
