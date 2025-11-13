@@ -85,6 +85,7 @@ static AGGREGATION_STAGE_NAME_MAP: Lazy<HashMap<&'static str, AggregationStage>>
             ("WORKER_PARTIAL_AGG", ("$group", None)),
             ("UNIONWITH", ("$unionWith", None)),
             ("DOCUMENTS_AGG", ("$documents", None)),
+            ("COLLSTATS_AGG", ("$collStats", None)),
         ])
     });
 
@@ -345,7 +346,7 @@ async fn transform_explain(
     query_catalog: &QueryCatalog,
 ) -> Result<RawDocumentBuf> {
     let mut plans: Vec<PostgresExplain> = serde_json::from_value(explain_content).map_err(|e| {
-        DocumentDBError::internal_error(format!("Failed to parse backend explain plan: {}", e))
+        DocumentDBError::internal_error(format!("Failed to parse backend explain plan: {e}"))
     })?;
 
     let plan = plans.remove(0);
@@ -365,7 +366,7 @@ async fn transform_explain(
 
     let plan = try_simplify_plan(plan, is_unsharded, query_base, query_catalog);
 
-    let collection_path = format!("{}.{}", db, collection);
+    let collection_path = format!("{db}.{collection}");
     let mut base_result = if subtype == RequestType::Aggregate {
         aggregate_explain(plan, &collection_path, verbosity, query_catalog)
     } else {
@@ -953,7 +954,7 @@ fn get_stage_from_plan(
                         ("FETCH".to_owned(), None)
                     }
                     _ => {
-                        log::warn!("Unknown scan: {}", cpp);
+                        log::warn!("Unknown scan: {cpp}");
                         ("".to_owned(), None)
                     }
                 }
@@ -977,6 +978,13 @@ fn get_stage_from_plan(
                                     .is_some_and(|pr| pr != "Outer"))
                         {
                             return ("DOCUMENTS_AGG".to_owned(), None);
+                        }
+                    }
+                    "coll_stats_aggregation" => {
+                        if parent_stage.is_some_and(|x| x == "COUNT") {
+                            return ("RECORD_STORE_FAST_COUNT".to_owned(), None);
+                        } else {
+                            return ("COLLSTATS_AGG".to_owned(), None);
                         }
                     }
                     _ => {}
@@ -1054,7 +1062,7 @@ fn aggregate_explain(
             for shard_plan in shard_parts.into_iter() {
                 i += 1;
                 shards_explain.append(
-                    format!("shard_{}", i),
+                    format!("shard_{i}"),
                     aggregate_explain_core(
                         shard_plan.clone(),
                         agg_type,
@@ -1067,7 +1075,7 @@ fn aggregate_explain(
             for error in errors {
                 i += 1;
 
-                shards_explain.append(format!("shard_{}", i), rawdoc! {"error": error});
+                shards_explain.append(format!("shard_{i}"), rawdoc! {"error": error});
             }
 
             return rawdoc! {
@@ -1212,15 +1220,12 @@ fn classify_stages(
     }
 
     if prior_stage.is_none() {
-        log::warn!(
-            "Found residual unparented aggregation stage {0}",
-            stage_name
-        );
+        log::warn!("Found residual unparented aggregation stage {stage_name}");
         processed_stages.push(("$root".to_owned(), plan, stage_name, None));
         return None;
     }
 
-    log::warn!("Unknown aggregation stage {}", stage_name);
+    log::warn!("Unknown aggregation stage {stage_name}");
     Some(plan)
 }
 
@@ -1253,7 +1258,7 @@ fn is_aggregation_stage_skippable(
                 && plan
                     .alias
                     .as_ref()
-                    .is_some_and(|a| o[0] == format!("{}.document", a))
+                    .is_some_and(|a| o[0] == format!("{a}.document"))
             {
                 return true;
             }
@@ -1368,6 +1373,14 @@ fn query_planner(
                 doc.append("page_size", smallest_from_i64(page_size));
             }
 
+            if let Some(startup_cost) = plan.startup_cost {
+                doc.append("startupCost", startup_cost);
+            }
+
+            if let Some(total_cost) = plan.total_cost {
+                doc.append("totalCost", total_cost);
+            }
+
             if let Some(sort_keys) = plan.sort_keys.as_ref() {
                 let mut sort_keys_arr = RawArrayBuf::new();
                 for order_string in sort_keys {
@@ -1407,10 +1420,7 @@ fn query_planner(
                     }
                     doc.append("cosmosSearchCustomParams", vector_search)
                 } else {
-                    log::error!(
-                        "Failed to parse vector search params: {}",
-                        vector_search_params
-                    )
+                    log::error!("Failed to parse vector search params: {vector_search_params}")
                 }
             }
 

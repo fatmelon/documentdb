@@ -78,7 +78,9 @@ extern bool EnableCollation;
 extern bool DefaultInlineWriteOperations;
 extern int MaxAggregationStagesAllowed;
 extern bool EnableIndexOrderbyPushdown;
-extern bool EnableIndexHintSupport;
+extern bool EnableConversionStreamableToSingleBatch;
+extern bool EnableFindProjectionAfterOffset;
+extern bool EnableNewCountAggregates;
 
 /* GUC to config tdigest compression */
 extern int TdigestCompressionAccuracy;
@@ -99,7 +101,8 @@ typedef void (*PipelineStagesPreCheckFunc)(const bson_value_t *existingValue,
 /*
  * Whether or not the stage requires persistence on the cursor.
  */
-typedef bool (*RequiresPersistentCursorFunc)(const bson_value_t *existingValue);
+typedef bool (*RequiresPersistentCursorFunc)(const bson_value_t *existingValue,
+											 bool *isSingleRowResult);
 
 /*
  * Whether or not the stage can be inlined for a lookup stage
@@ -174,6 +177,9 @@ static Query * HandleBucket(const bson_value_t *existingValue, Query *query,
 							AggregationPipelineBuildContext *context);
 static Query * HandleCount(const bson_value_t *existingValue, Query *query,
 						   AggregationPipelineBuildContext *context);
+static Query * HandleCountCore(const bson_value_t *existingValue, Query *query,
+							   AggregationPipelineBuildContext *context, bool
+							   isCountCommand);
 static Query * HandleFill(const bson_value_t *existingValue, Query *query,
 						  AggregationPipelineBuildContext *context);
 static Query * HandleLimit(const bson_value_t *existingValue, Query *query,
@@ -209,10 +215,18 @@ static Query * HandleMatchAggregationStage(const bson_value_t *existingValue,
 										   Query *query,
 										   AggregationPipelineBuildContext *context);
 
-static bool RequiresPersistentCursorFalse(const bson_value_t *pipelineValue);
-static bool RequiresPersistentCursorTrue(const bson_value_t *pipelineValue);
-static bool RequiresPersistentCursorLimit(const bson_value_t *pipelineValue);
-static bool RequiresPersistentCursorSkip(const bson_value_t *pipelineValue);
+static bool RequiresPersistentCursorFalse(const bson_value_t *pipelineValue,
+										  bool *isSingleRowResult);
+static bool RequiresPersistentCursorTrue(const bson_value_t *pipelineValue,
+										 bool *isSingleRowResult);
+static bool RequiresPersistentCursorLimit(const bson_value_t *pipelineValue,
+										  bool *isSingleRowResult);
+static bool RequiresPersistentCursorSkip(const bson_value_t *pipelineValue,
+										 bool *isSingleRowResult);
+static bool RequiresPersistentCursorFalseNoSingleRow(const bson_value_t *pipelineValue,
+													 bool *isSingleRowResult);
+static bool RequiresPersistentCursorTrueSingleRow(const bson_value_t *pipelineValue,
+												  bool *isSingleRowResult);
 
 static bool CanInlineLookupStageProjection(const bson_value_t *stageValue, const
 										   StringView *lookupPath, bool hasLet);
@@ -332,7 +346,7 @@ static const AggregationStageDefinition StageDefinitions[] =
 	{
 		.stage = "$changeStream",
 		.mutateFunc = &HandleChangeStream,
-		.requiresPersistentCursor = &RequiresPersistentCursorFalse,
+		.requiresPersistentCursor = &RequiresPersistentCursorFalseNoSingleRow,
 		.canInlineLookupStageFunc = NULL,
 		.preservesStableSortOrder = false,
 		.canHandleAgnosticQueries = true,
@@ -345,7 +359,7 @@ static const AggregationStageDefinition StageDefinitions[] =
 	{
 		.stage = "$collStats",
 		.mutateFunc = &HandleCollStats,
-		.requiresPersistentCursor = &RequiresPersistentCursorTrue,
+		.requiresPersistentCursor = &RequiresPersistentCursorTrueSingleRow,
 		.canInlineLookupStageFunc = NULL,
 		.preservesStableSortOrder = false,
 		.canHandleAgnosticQueries = false,
@@ -358,7 +372,7 @@ static const AggregationStageDefinition StageDefinitions[] =
 	{
 		.stage = "$count",
 		.mutateFunc = &HandleCount,
-		.requiresPersistentCursor = &RequiresPersistentCursorTrue,
+		.requiresPersistentCursor = &RequiresPersistentCursorTrueSingleRow,
 
 		/* Changes the projector - can't be inlined */
 		.canInlineLookupStageFunc = NULL,
@@ -506,7 +520,7 @@ static const AggregationStageDefinition StageDefinitions[] =
 	{
 		.stage = "$inverseMatch",
 		.mutateFunc = &HandleInverseMatch,
-		.requiresPersistentCursor = &RequiresPersistentCursorFalse,
+		.requiresPersistentCursor = &RequiresPersistentCursorFalseNoSingleRow,
 
 		/* can always be inlined since it doesn't change the projector */
 		.canInlineLookupStageFunc = &CanInlineLookupStageTrue,
@@ -800,7 +814,7 @@ static const AggregationStageDefinition StageDefinitions[] =
 	{
 		.stage = "$unionWith",
 		.mutateFunc = &HandleUnionWith,
-		.requiresPersistentCursor = &RequiresPersistentCursorFalse,
+		.requiresPersistentCursor = &RequiresPersistentCursorFalseNoSingleRow,
 		.canInlineLookupStageFunc = NULL,
 		.preservesStableSortOrder = false,
 		.canHandleAgnosticQueries = false,
@@ -1039,20 +1053,17 @@ static void
 ProcessIndexHint(bson_iter_t *iterator, bson_value_t *targetHintValue)
 {
 	ReportFeatureUsage(FEATURE_INDEX_HINT);
-	if (EnableIndexHintSupport)
+	const bson_value_t *value = bson_iter_value(iterator);
+	if (value->value_type == BSON_TYPE_UTF8 ||
+		value->value_type == BSON_TYPE_DOCUMENT)
 	{
-		const bson_value_t *value = bson_iter_value(iterator);
-		if (value->value_type == BSON_TYPE_UTF8 ||
-			value->value_type == BSON_TYPE_DOCUMENT)
-		{
-			/* The mongo index is specified as a utf8 string index name */
-			*targetHintValue = *value;
-		}
-		else
-		{
-			EnsureTopLevelFieldType("hint", iterator,
-									BSON_TYPE_UTF8);
-		}
+		/* The mongo index is specified as a utf8 string index name */
+		*targetHintValue = *value;
+	}
+	else
+	{
+		EnsureTopLevelFieldType("hint", iterator,
+								BSON_TYPE_UTF8);
 	}
 }
 
@@ -1147,7 +1158,8 @@ MutateQueryWithPipeline(Query *query, List *aggregationStages,
 
 		context->requiresPersistentCursor =
 			context->requiresPersistentCursor ||
-			definition->requiresPersistentCursor(&stage->stageValue);
+			definition->requiresPersistentCursor(&stage->stageValue,
+												 &context->isSingleRowResult);
 
 		if (!definition->preservesStableSortOrder)
 		{
@@ -1373,6 +1385,13 @@ GenerateAggregationQuery(text *database, pgbson *aggregationSpec, QueryData *que
 		queryData->cursorKind =
 			context.requiresPersistentCursor || isCollectionAgnosticQuery ?
 			QueryCursorType_Persistent : QueryCursorType_Streamable;
+	}
+
+	if (queryData->cursorKind == QueryCursorType_Streamable &&
+		context.isSingleRowResult && EnableConversionStreamableToSingleBatch &&
+		queryData->batchSize >= 1)
+	{
+		queryData->cursorKind = QueryCursorType_SingleBatch;
 	}
 
 	queryData->namespaceName = context.namespaceName;
@@ -1796,17 +1815,18 @@ default_find_case:
 
 	context.variableSpec = (Expr *) MakeBsonConst(parsedVariables);
 
+	context.isSingleRowResult = false;
 	if (sort.value_type != BSON_TYPE_EOD)
 	{
 		context.requiresPersistentCursor = true;
 	}
 
-	if (RequiresPersistentCursorSkip(&skip))
+	if (RequiresPersistentCursorSkip(&skip, &context.isSingleRowResult))
 	{
 		context.requiresPersistentCursor = true;
 	}
 
-	if (RequiresPersistentCursorLimit(&limit))
+	if (RequiresPersistentCursorLimit(&limit, &context.isSingleRowResult))
 	{
 		context.requiresPersistentCursor = true;
 	}
@@ -1855,16 +1875,28 @@ default_find_case:
 		context.stageNum++;
 	}
 
-	/* finally update projection */
-	if (projection.value_type != BSON_TYPE_EOD)
-	{
-		query = HandleProjectFind(&projection, &filter, query, &context);
-	}
-
 	/* $near and $nearSphere add sort clause to query, for them we need persistent cursor. */
 	if (query->sortClause)
 	{
 		context.requiresPersistentCursor = true;
+	}
+
+	/* finally update projection */
+	if (projection.value_type != BSON_TYPE_EOD)
+	{
+		/* Before applying projection - check if we need to
+		 * push to a subquery. We do this only if we have
+		 * skip to avoid projecting on documents we won't need.
+		 */
+		if (context.requiresSubQuery &&
+			context.requiresPersistentCursor &&
+			query->limitOffset != NULL &&
+			EnableFindProjectionAfterOffset)
+		{
+			query = MigrateQueryToSubQuery(query, &context);
+		}
+
+		query = HandleProjectFind(&projection, &filter, query, &context);
 	}
 
 	if (rt_fetch(1, query->rtable)->rtekind != RTE_RELATION)
@@ -1889,6 +1921,13 @@ default_find_case:
 		queryData->cursorKind = QueryCursorType_PointRead;
 	}
 
+	if (queryData->cursorKind == QueryCursorType_Streamable &&
+		context.isSingleRowResult && EnableConversionStreamableToSingleBatch &&
+		queryData->batchSize >= 1)
+	{
+		queryData->cursorKind = QueryCursorType_SingleBatch;
+	}
+
 	if (addCursorParams)
 	{
 		bool addCursorAsConst = false;
@@ -1903,6 +1942,16 @@ default_find_case:
 	}
 
 	return query;
+}
+
+
+inline static bool
+CanUseNewCountAggregates()
+{
+	return EnableNewCountAggregates &&
+		   (IsClusterVersionAtLeastPatch(DocDB_V0, 106, 2) ||
+			IsClusterVersionAtLeastPatch(DocDB_V0, 107, 1) ||
+			IsClusterVersionAtleast(DocDB_V0, 108, 0));
 }
 
 
@@ -1925,6 +1974,7 @@ GenerateCountQuery(text *databaseDatum, pgbson *countSpec, bool setStatementTime
 	bson_value_t indexHint = { 0 };
 	pg_uuid_t *collectionUuid = NULL;
 
+	bool appendOkResult = false;
 	bool hasQueryModifier = false;
 	context.allowShardBaseTable = true;
 	while (bson_iter_next(&countIterator))
@@ -1942,7 +1992,9 @@ GenerateCountQuery(text *databaseDatum, pgbson *countSpec, bool setStatementTime
 		{
 			EnsureTopLevelFieldType("query", &countIterator, BSON_TYPE_DOCUMENT);
 			filter = *value;
-			hasQueryModifier = true;
+
+			/* Only do runtime count if there's a non-empty filter */
+			hasQueryModifier = hasQueryModifier || !IsBsonValueEmptyDocument(value);
 		}
 		else if (StringViewEqualsCString(&keyView, "limit"))
 		{
@@ -1958,6 +2010,7 @@ GenerateCountQuery(text *databaseDatum, pgbson *countSpec, bool setStatementTime
 		}
 		else if (StringViewEqualsCString(&keyView, "hint"))
 		{
+			hasQueryModifier = true;
 			ProcessIndexHint(&countIterator, &indexHint);
 		}
 		else if (StringViewEqualsCString(&keyView, "fields"))
@@ -2010,6 +2063,7 @@ GenerateCountQuery(text *databaseDatum, pgbson *countSpec, bool setStatementTime
 		pgbson *projectSpec = PgbsonWriterGetPgbson(&projectWriter);
 		bson_value_t projectSpecValue = ConvertPgbsonToBsonValue(projectSpec);
 		query = HandleProject(&projectSpecValue, query, &context);
+		appendOkResult = true;
 	}
 	else
 	{
@@ -2073,7 +2127,7 @@ GenerateCountQuery(text *databaseDatum, pgbson *countSpec, bool setStatementTime
 		{
 			query = HandleLimit(&limit, query, &context);
 			context.stageNum++;
-			if (RequiresPersistentCursorLimit(&limit))
+			if (RequiresPersistentCursorLimit(&limit, &context.isSingleRowResult))
 			{
 				context.requiresPersistentCursor = true;
 			}
@@ -2084,17 +2138,24 @@ GenerateCountQuery(text *databaseDatum, pgbson *countSpec, bool setStatementTime
 		countValue.value_type = BSON_TYPE_UTF8;
 		countValue.value.v_utf8.len = 1;
 		countValue.value.v_utf8.str = "n";
-		query = HandleCount(&countValue, query, &context);
+
+		bool isCountCommand = true;
+		query = HandleCountCore(&countValue, query, &context, isCountCommand);
 	}
 
-	/* Now add the "ok": 1 as an add fields stage. */
-	pgbson_writer addFieldsWriter;
-	PgbsonWriterInit(&addFieldsWriter);
-	PgbsonWriterAppendDouble(&addFieldsWriter, "ok", 2, 1);
-	pgbson *addFieldsSpec = PgbsonWriterGetPgbson(&addFieldsWriter);
-	bson_value_t addFieldsValue = ConvertPgbsonToBsonValue(addFieldsSpec);
-	query = HandleSimpleProjectionStage(&addFieldsValue, query, &context, "$addFields",
-										BsonDollaMergeDocumentsFunctionOid(), NULL, NULL);
+	if (appendOkResult || !CanUseNewCountAggregates())
+	{
+		/* Now add the "ok": 1 as an add fields stage. */
+		pgbson_writer addFieldsWriter;
+		PgbsonWriterInit(&addFieldsWriter);
+		PgbsonWriterAppendDouble(&addFieldsWriter, "ok", 2, 1);
+		pgbson *addFieldsSpec = PgbsonWriterGetPgbson(&addFieldsWriter);
+		bson_value_t addFieldsValue = ConvertPgbsonToBsonValue(addFieldsSpec);
+		query = HandleSimpleProjectionStage(&addFieldsValue, query, &context,
+											"$addFields",
+											BsonDollaMergeDocumentsFunctionOid(), NULL,
+											NULL);
+	}
 
 	return query;
 }
@@ -4517,15 +4578,15 @@ CreateMultiArgAggregate(Oid aggregateFunctionId, List *args, List *argTypes,
 
 /*
  * Handles the $count stage. Injects an aggregate of
- * bsonsum('{ "": 1 }');
+ * bsoncommandcount(*) or bsoncount(*) in the case it needs to repath the count field.
  * First moves existing query to a subquery.
  * Then injects the aggregate projector.
  * We request a new subquery for subsequent stages, but it
  * may not be needed.
  */
 static Query *
-HandleCount(const bson_value_t *existingValue, Query *query,
-			AggregationPipelineBuildContext *context)
+HandleCountCore(const bson_value_t *existingValue, Query *query,
+				AggregationPipelineBuildContext *context, bool isCountCommand)
 {
 	ReportFeatureUsage(FEATURE_STAGE_COUNT);
 	StringView countField = { 0 };
@@ -4556,6 +4617,11 @@ HandleCount(const bson_value_t *existingValue, Query *query,
 							"The count field is not allowed to contain '.'.")));
 	}
 
+	bool useNewCountAggregates = CanUseNewCountAggregates();
+
+	/* if it is command count query we can just use BSONCOMMANDCOUNT and avoid the bson repath and build. */
+	bool useCommandCount = useNewCountAggregates && isCountCommand;
+
 	/* Count requires the existing query to move to subquery */
 	query = MigrateQueryToSubQuery(query, context);
 
@@ -4567,28 +4633,56 @@ HandleCount(const bson_value_t *existingValue, Query *query,
 	parseState->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 	parseState->p_next_resno = firstEntry->resno + 1;
 
-	pgbson_writer writer;
-	PgbsonWriterInit(&writer);
-	PgbsonWriterAppendInt32(&writer, "", 0, 1);
-	Expr *constValue = (Expr *) MakeBsonConst(PgbsonWriterGetPgbson(&writer));
-	Aggref *aggref = CreateSingleArgAggregate(BsonSumAggregateFunctionOid(), constValue,
-											  parseState);
-	pfree(parseState);
+	Aggref *aggref = NULL;
+	if (useNewCountAggregates)
+	{
+		Oid aggFuncId = useCommandCount ? BsonCommandCountAggregateFunctionOid()
+						: BsonCountAggregateFunctionOid();
 
-	query->hasAggs = true;
+		Expr *constValue = (Expr *) makeConst(INT4OID, -1, InvalidOid, 4, Int32GetDatum(
+												  1), false, true);
+		aggref = CreateSingleArgAggregate(aggFuncId,
+										  constValue,
+										  parseState);
+		firstEntry->expr = (Expr *) aggref;
+	}
+	else
+	{
+		pgbson_writer writer;
+		PgbsonWriterInit(&writer);
+		PgbsonWriterAppendInt32(&writer, "", 0, 1);
+		Expr *constValue = (Expr *) MakeBsonConst(PgbsonWriterGetPgbson(&writer));
+		aggref = CreateSingleArgAggregate(BsonSumAggregateFunctionOid(), constValue,
+										  parseState);
+	}
 
 	/* We wrap the count in a bson_repath_and_build */
-	Const *countFieldText = MakeTextConst(countField.string, countField.length);
+	if (!useCommandCount)
+	{
+		Const *countFieldText = MakeTextConst(countField.string, countField.length);
 
-	List *args = list_make2(countFieldText, aggref);
-	FuncExpr *expression = makeFuncExpr(BsonRepathAndBuildFunctionOid(), BsonTypeId(),
-										args, InvalidOid, InvalidOid,
-										COERCE_EXPLICIT_CALL);
-	firstEntry->expr = (Expr *) expression;
+		List *args = list_make2(countFieldText, aggref);
+		FuncExpr *expression = makeFuncExpr(BsonRepathAndBuildFunctionOid(), BsonTypeId(),
+											args, InvalidOid, InvalidOid,
+											COERCE_EXPLICIT_CALL);
+		firstEntry->expr = (Expr *) expression;
+	}
+
+	pfree(parseState);
+	query->hasAggs = true;
 
 	/* Having count means the next stage must be a new outer query */
 	context->requiresSubQuery = true;
 	return query;
+}
+
+
+static Query *
+HandleCount(const bson_value_t *existingValue, Query *query,
+			AggregationPipelineBuildContext *context)
+{
+	bool isCountCommand = false;
+	return HandleCountCore(existingValue, query, context, isCountCommand);
 }
 
 
@@ -4775,8 +4869,7 @@ HandleSort(const bson_value_t *existingValue, Query *query,
 			List *args = NIL;
 
 			/* apply collation to the sort comparison */
-			if (IsCollationApplicable(context->collationString) &&
-				IsClusterVersionAtleast(DocDB_V0, 104, 0))
+			if (IsCollationApplicable(context->collationString))
 			{
 				funcOid = BsonOrderByWithCollationFunctionOid();
 				Const *collationConst = MakeTextConst(context->collationString,
@@ -4815,10 +4908,7 @@ HandleSort(const bson_value_t *existingValue, Query *query,
 				 * If there's an orderby pushdown to the index, add a full scan clause iff
 				 * the query has no filters yet.
 				 */
-				if (CanPushSortFilterToIndex(query, context) && (
-						IsClusterVersionAtLeastPatch(DocDB_V0, 103, 1) ||
-						IsClusterVersionAtLeastPatch(DocDB_V0, 104, 1) ||
-						IsClusterVersionAtleast(DocDB_V0, 105, 0)))
+				if (CanPushSortFilterToIndex(query, context))
 				{
 					List *rangeArgs = list_make2(sortInput, sortBson);
 					Expr *fullScanExpr = (Expr *) makeFuncExpr(
@@ -4834,7 +4924,7 @@ HandleSort(const bson_value_t *existingValue, Query *query,
 				/* If sort by is descending use the new operators: this allows for
 				 * customization of reverse scan.
 				 */
-				if (IsClusterVersionAtleast(DocDB_V0, 104, 0) && !isAscending)
+				if (!isAscending)
 				{
 					sortByDirection = SORTBY_USING;
 					sortBy->useOp = list_make2(makeString(ApiInternalSchemaNameV2),
@@ -5101,6 +5191,53 @@ AddSimpleGroupAccumulator(Query *query, const bson_value_t *accumulatorValue,
 														parseState, identifiers,
 														query, BsonTypeId(),
 														NULL));
+	return repathArgs;
+}
+
+
+inline static List *
+AddSumGroupAccumulator(Query *query, const bson_value_t *accumulatorValue,
+					   List *repathArgs, Const *accumulatorText,
+					   ParseState *parseState, char *identifiers,
+					   Expr *documentExpr, Expr *variableSpec, Expr *groupIdExpr)
+{
+	bool canUseBsonCountAggregate = CanUseNewCountAggregates() &&
+									IsA(groupIdExpr, Const);
+
+	bool useNewCountAggregate = false;
+	if (canUseBsonCountAggregate &&
+		BsonValueIsNumber(accumulatorValue))
+	{
+		int64_t countValue = BsonValueAsInt64(accumulatorValue);
+		useNewCountAggregate = countValue == 1;
+	}
+	else if (canUseBsonCountAggregate &&
+			 IsBsonValueEmptyDocument(accumulatorValue))
+	{
+		useNewCountAggregate = true;
+	}
+
+	if (!useNewCountAggregate)
+	{
+		return AddSimpleGroupAccumulator(query, accumulatorValue, repathArgs,
+										 accumulatorText, parseState,
+										 identifiers, documentExpr,
+										 BsonSumAggregateFunctionOid(),
+										 variableSpec);
+	}
+
+	Expr *constValue = (Expr *) makeConst(INT4OID, -1, InvalidOid, 4, Int32GetDatum(1),
+										  false, true);
+	Aggref *aggref = CreateSingleArgAggregate(BsonCountAggregateFunctionOid(),
+											  constValue, parseState);
+	repathArgs = lappend(repathArgs, AddGroupExpression((Expr *) accumulatorText,
+														parseState, identifiers,
+														query, TEXTOID, NULL));
+	repathArgs = lappend(repathArgs, AddGroupExpression((Expr *) aggref,
+														parseState, identifiers,
+														query, BsonTypeId(),
+														NULL));
+
 	return repathArgs;
 }
 
@@ -5757,13 +5894,13 @@ HandleGroup(const bson_value_t *existingValue, Query *query,
 		}
 		else if (StringViewEqualsCString(&accumulatorName, "$sum"))
 		{
-			repathArgs = AddSimpleGroupAccumulator(query, &accumulatorElement.bsonValue,
-												   repathArgs,
-												   accumulatorText, parseState,
-												   identifiers,
-												   origEntry->expr,
-												   BsonSumAggregateFunctionOid(),
-												   context->variableSpec);
+			repathArgs = AddSumGroupAccumulator(query, &accumulatorElement.bsonValue,
+												repathArgs,
+												accumulatorText, parseState,
+												identifiers,
+												origEntry->expr,
+												context->variableSpec,
+												groupIdDocumentExpr);
 		}
 		else if (StringViewEqualsCString(&accumulatorName, "$max"))
 		{
@@ -5787,16 +5924,40 @@ HandleGroup(const bson_value_t *existingValue, Query *query,
 		}
 		else if (StringViewEqualsCString(&accumulatorName, "$count"))
 		{
-			bson_value_t countValue = { 0 };
-			countValue.value_type = BSON_TYPE_INT32;
-			countValue.value.v_int32 = 1;
+			if (CanUseNewCountAggregates())
+			{
+				/* Use the new BSONCOUNT aggregate. */
+				Expr *constValue = (Expr *) makeConst(INT4OID, -1, InvalidOid, 4,
+													  Int32GetDatum(1), false, true);
+				Aggref *aggref = CreateSingleArgAggregate(
+					BsonCountAggregateFunctionOid(),
+					constValue, parseState);
 
-			repathArgs = AddSimpleGroupAccumulator(query, &countValue, repathArgs,
-												   accumulatorText, parseState,
-												   identifiers,
-												   origEntry->expr,
-												   BsonSumAggregateFunctionOid(),
-												   context->variableSpec);
+				repathArgs = lappend(repathArgs, AddGroupExpression(
+										 (Expr *) accumulatorText,
+										 parseState,
+										 identifiers,
+										 query, TEXTOID,
+										 NULL));
+				repathArgs = lappend(repathArgs, AddGroupExpression((Expr *) aggref,
+																	parseState,
+																	identifiers,
+																	query, BsonTypeId(),
+																	NULL));
+			}
+			else
+			{
+				bson_value_t countValue = { 0 };
+				countValue.value_type = BSON_TYPE_INT32;
+				countValue.value.v_int32 = 1;
+
+				repathArgs = AddSimpleGroupAccumulator(query, &countValue, repathArgs,
+													   accumulatorText, parseState,
+													   identifiers,
+													   origEntry->expr,
+													   BsonSumAggregateFunctionOid(),
+													   context->variableSpec);
+			}
 		}
 		else if (StringViewEqualsCString(&accumulatorName, "$first"))
 		{
@@ -6181,10 +6342,7 @@ HandleGroup(const bson_value_t *existingValue, Query *query,
 		 * the query has no filters yet.
 		 */
 		if (isGroupByValidForIndexPushdown &&
-			CanPushSortFilterToIndex(query, context) && (
-				IsClusterVersionAtLeastPatch(DocDB_V0, 103, 1) ||
-				IsClusterVersionAtLeastPatch(DocDB_V0, 104, 1) ||
-				IsClusterVersionAtleast(DocDB_V0, 105, 0)))
+			CanPushSortFilterToIndex(query, context))
 		{
 			pgbsonelement sortElement = { 0 };
 			sortElement.path = idValue.value.v_utf8.str + 1;
@@ -6365,8 +6523,19 @@ IsPartitionByFieldsOnShardKey(const pgbson *partitionByFields, const
  * A simple function that never requires persistent cursors
  */
 static bool
-RequiresPersistentCursorFalse(const bson_value_t *pipelineValue)
+RequiresPersistentCursorFalse(const bson_value_t *pipelineValue, bool *isSingleRowResult)
 {
+	/* This path doesn't consider singleRow - defers to other stages but doesn't exclude it */
+	return false;
+}
+
+
+static bool
+RequiresPersistentCursorFalseNoSingleRow(const bson_value_t *pipelineValue,
+										 bool *isSingleRowResult)
+{
+	/* This path doesn't consider single row output but excludes singleBatch */
+	*isSingleRowResult = false;
 	return false;
 }
 
@@ -6375,8 +6544,20 @@ RequiresPersistentCursorFalse(const bson_value_t *pipelineValue)
  * A simple function that always requires persistent cursors
  */
 static bool
-RequiresPersistentCursorTrue(const bson_value_t *pipelineValue)
+RequiresPersistentCursorTrue(const bson_value_t *pipelineValue, bool *isSingleRowResult)
 {
+	/* A persisted cursor for now assumes multi-row */
+	*isSingleRowResult = false;
+	return true;
+}
+
+
+static bool
+RequiresPersistentCursorTrueSingleRow(const bson_value_t *pipelineValue,
+									  bool *isSingleRowResult)
+{
+	/* A persisted cursor that produces a single row response */
+	*isSingleRowResult = true;
 	return true;
 }
 
@@ -6385,12 +6566,22 @@ RequiresPersistentCursorTrue(const bson_value_t *pipelineValue)
  * Checks that the limit stage requires persistence (true if it's not limit 1).
  */
 static bool
-RequiresPersistentCursorLimit(const bson_value_t *pipelineValue)
+RequiresPersistentCursorLimit(const bson_value_t *pipelineValue, bool *isSingleRowResult)
 {
 	if (pipelineValue->value_type != BSON_TYPE_EOD &&
 		BsonValueIsNumber(pipelineValue))
 	{
 		int32_t limit = BsonValueAsInt32(pipelineValue);
+		if (limit == 1)
+		{
+			/* For special case limit 1 - this can be a singleBatch cursor
+			 * instead of streaming.
+			 */
+			*isSingleRowResult = true;
+			return false;
+		}
+
+		/* Defer to prior */
 		return limit != 1 && limit != 0;
 	}
 
@@ -6402,8 +6593,9 @@ RequiresPersistentCursorLimit(const bson_value_t *pipelineValue)
  * Checks that the skip stage requires persistence (true if it's not skip 0).
  */
 static bool
-RequiresPersistentCursorSkip(const bson_value_t *pipelineValue)
+RequiresPersistentCursorSkip(const bson_value_t *pipelineValue, bool *isSingleRowResult)
 {
+	/* Skip doesn't make any judgements on singleRowResults */
 	if (pipelineValue->value_type != BSON_TYPE_EOD &&
 		BsonValueIsNumber(pipelineValue))
 	{

@@ -29,9 +29,11 @@
 #include <optimizer/restrictinfo.h>
 #include <optimizer/cost.h>
 #include <access/genam.h>
+#include <utils/index_selfuncs.h>
 
 #include "metadata/index.h"
 #include "query/query_operator.h"
+#include "opclass/bson_gin_index_types_core.h"
 #include "geospatial/bson_geospatial_geonear.h"
 #include "planner/mongo_query_operator.h"
 #include "opclass/bson_index_support.h"
@@ -196,6 +198,10 @@ static OpExpr * CreateFullScanOpExpr(Expr *documentExpr, const char *sourcePath,
 									 sourcePathLength, int32_t orderByScanDirection);
 static OpExpr * CreateExistsTrueOpExpr(Expr *documentExpr, const char *sourcePath,
 									   uint32_t sourcePathLength);
+static List * GetSortDetails(PlannerInfo *root, Index rti,
+							 bool *hasOrderBy, bool *hasGroupby, bool *isOrderById);
+static bool IsValidIndexPathForIdOrderBy(IndexPath *indexPath, List *sortDetails);
+static bool IsValidForIndexOnlyScans(PlannerInfo *root);
 
 /*-------------------------------*/
 /* Force index support functions */
@@ -218,6 +224,9 @@ static bool PushTextQueryToRuntime(PlannerInfo *root, RelOptInfo *rel,
 static void ThrowNoTextIndexFound(void);
 static void ThrowNoVectorIndexFound(void);
 
+static IndexPath * TrimIndexRestrictInfoForBtreePath(PlannerInfo *root,
+													 IndexPath *indexPath,
+													 bool *hasNonIdClauses);
 static bool MatchIndexPathEquals(IndexPath *path, void *matchContext);
 static bool EnableGeoNearForceIndexPushdown(PlannerInfo *root,
 											ReplaceExtensionFunctionContext *context);
@@ -306,13 +315,17 @@ extern bool UseNewElemMatchIndexOperatorOnPushdown;
 extern bool DisableDollarSupportFuncSelectivity;
 extern bool EnableNewOperatorSelectivityMode;
 extern bool EnableCompositeIndexPlanner;
-extern bool EnableIndexHintSupport;
 extern bool LowSelectivityForLookup;
 extern bool EnableIndexOrderbyPushdown;
 extern bool EnableIndexOrderByReverse;
 extern bool SetSelectivityForFullScan;
 extern bool EnableExprLookupIndexPushdown;
 extern bool EnableUnifyPfeOnIndexInfo;
+extern bool EnableIdIndexPushdown;
+extern bool ForceIndexOnlyScanIfAvailable;
+extern bool EnableIdIndexCustomCostFunction;
+extern bool EnableIndexOnlyScan;
+extern bool EnableOrderByIdOnCostFunction;
 
 /* --------------------------------------------------------- */
 /* Top level exports */
@@ -385,7 +398,6 @@ dollar_support(PG_FUNCTION_ARGS)
 			}
 		}
 		else if (SetSelectivityForFullScan &&
-				 IsClusterVersionAtleast(DocDB_V0, 10, 0) &&
 				 req->funcid == BsonRangeMatchFunctionId())
 		{
 			/* For fullScan for orderby, we want to ensure we mark the
@@ -406,7 +418,6 @@ dollar_support(PG_FUNCTION_ARGS)
 		 */
 		SupportRequestCost *req = (SupportRequestCost *) supportRequest;
 		if (SetSelectivityForFullScan &&
-			IsClusterVersionAtleast(DocDB_V0, 10, 0) &&
 			req->funcid == BsonRangeMatchFunctionId() && req->node != NULL &&
 			IsA(req->node, FuncExpr))
 		{
@@ -538,13 +549,16 @@ OpExprForAggregationStageSupportFunction(Node *supportRequest)
 	}
 
 	Oid operatorOid = -1;
+	BsonIndexStrategy strategy = BSON_INDEX_STRATEGY_INVALID;
 	if (req->funcid == BsonDollarLookupJoinFilterFunctionOid())
 	{
 		operatorOid = BsonInMatchFunctionId();
+		strategy = BSON_INDEX_STRATEGY_DOLLAR_IN;
 	}
 	else if (req->funcid == BsonDollarMergeJoinFunctionOid())
 	{
 		operatorOid = BsonEqualMatchIndexFunctionId();
+		strategy = BSON_INDEX_STRATEGY_DOLLAR_EQUAL;
 	}
 	else
 	{
@@ -580,7 +594,7 @@ OpExprForAggregationStageSupportFunction(Node *supportRequest)
 		return NULL;
 	}
 
-	if (!ValidateIndexForQualifierPathForDollarIn(options, &pathView))
+	if (!ValidateIndexForQualifierPathForEquality(options, &pathView, strategy))
 	{
 		return NULL;
 	}
@@ -735,8 +749,7 @@ CheckRestrictionPathNodeForIndexOperation(Expr *currentExpr,
 			context->forceIndexQueryOpData.path = NULL;
 			context->forceIndexQueryOpData.opExtraState = hintContext;
 		}
-		else if (IsClusterVersionAtleast(DocDB_V0, 10, 0) &&
-				 funcExpr->funcid == ApiBsonSearchParamFunctionId())
+		else if (funcExpr->funcid == ApiBsonSearchParamFunctionId())
 		{
 			/* Just validate indexHint is incompatible with vector search but don't set
 			 * the forceIndexQueryOpData.type to vector search yet to keep compatibility.
@@ -810,6 +823,10 @@ CheckRestrictionPathNodeForIndexOperation(Expr *currentExpr,
 					primaryKeyContext->shardKeyQualExpr = currentRestrictInfo;
 					context->plannerOrderByData.shardKeyEqualityExpr =
 						currentRestrictInfo;
+					context->plannerOrderByData.isShardKeyEqualityOnUnsharded =
+						IsOpExprShardKeyForUnshardedCollections(currentExpr,
+																context->inputData.
+																collectionId);
 				}
 			}
 		}
@@ -1452,6 +1469,7 @@ IndexClausesValidForIndexOnlyScan(IndexPath *indexPath,
 		if (!IsA(clause, OpExpr))
 		{
 			if (IsA(clause, BoolExpr) &&
+				replaceContext->plannerOrderByData.isShardKeyEqualityOnUnsharded &&
 				IsShardKeyFilterBoolExpr((BoolExpr *) clause,
 										 replaceContext->plannerOrderByData.
 										 shardKeyEqualityExpr))
@@ -1478,7 +1496,8 @@ IndexClausesValidForIndexOnlyScan(IndexPath *indexPath,
 		if (indexStrategy == BSON_INDEX_STRATEGY_INVALID)
 		{
 			/* if it is a shard key filter, we can safely do an index only scan. */
-			if (baseRestrictInfo ==
+			if (replaceContext->plannerOrderByData.isShardKeyEqualityOnUnsharded &&
+				baseRestrictInfo ==
 				replaceContext->plannerOrderByData.shardKeyEqualityExpr)
 			{
 				continue;
@@ -1500,6 +1519,44 @@ IndexClausesValidForIndexOnlyScan(IndexPath *indexPath,
 }
 
 
+static bool
+PlanHasAggregates(PlannerInfo *root)
+{
+	return list_length(root->agginfos) != 0 ||
+		   (root->parent_root != NULL && PlanHasAggregates(root->parent_root));
+}
+
+
+static bool
+IsValidForIndexOnlyScans(PlannerInfo *root)
+{
+	if (!PlanHasAggregates(root) ||
+		root->hasJoinRTEs)
+	{
+		/* Don't handle simple queries for now - only things with aggregates
+		 * Note: Things like GroupBy with no aggregates will not work here, but
+		 * that's okay. We also only consider base tables for index only scans.
+		 * TODO: This can also be extended to handle covered indexes later.
+		 */
+		return false;
+	}
+
+	bool projectionHasVarOrQuery = false;
+	expression_tree_walker((Node *) root->processed_tlist,
+						   ProjectionReferencesDocumentVar,
+						   &projectionHasVarOrQuery);
+	if (projectionHasVarOrQuery)
+	{
+		/* If the projection has a Var or a Query, we can't do index only scan
+		 * because we can't cover the projection.
+		 */
+		return false;
+	}
+
+	return true;
+}
+
+
 /*
  * Check whether we can handle index scans as index only scans.
  * This is possible if:
@@ -1515,27 +1572,13 @@ void
 ConsiderIndexOnlyScan(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
 					  Index rti, ReplaceExtensionFunctionContext *context)
 {
-	if (list_length(root->agginfos) == 0 ||
-		rte->rtekind != RTE_RELATION ||
-		root->hasJoinRTEs)
+	if (rte->rtekind != RTE_RELATION)
 	{
-		/* Don't handle simple queries for now - only things with aggregates
-		 * Note: Things like GroupBy with no aggregates will not work here, but
-		 * that's okay. We also only consider base tables for index only scans.
-		 * TODO: This can also be extended to handle covered indexes later.
-		 */
 		return;
 	}
 
-	bool projectionHasVarOrQuery = false;
-	expression_tree_walker((Node *) root->parse->targetList,
-						   ProjectionReferencesDocumentVar,
-						   &projectionHasVarOrQuery);
-	if (projectionHasVarOrQuery)
+	if (!IsValidForIndexOnlyScans(root))
 	{
-		/* If the projection has a Var or a Query, we can't do index only scan
-		 * because we can't cover the projection.
-		 */
 		return;
 	}
 
@@ -1565,36 +1608,87 @@ ConsiderIndexOnlyScan(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
 			continue;
 		}
 
-		/* TODO: support primary key index (btree). */
+		bool isBtreeIndex = false;
 		IndexPath *indexPath = (IndexPath *) path;
-		if (indexPath->indexinfo->nkeycolumns < 1 ||
-			!IsOrderBySupportedOnOpClass(indexPath->indexinfo->relam,
-										 indexPath->indexinfo->opfamily[0]))
+
+		if (indexPath->path.pathtype == T_IndexOnlyScan)
 		{
+			/* Already an index only scan */
 			continue;
 		}
 
-		if (!CompositeIndexSupportsIndexOnlyScan(indexPath))
+		if (IsBtreePrimaryKeyIndex(indexPath->indexinfo) &&
+			EnableIdIndexPushdown)
 		{
-			continue;
+			if (EnableIdIndexCustomCostFunction && !ForceIndexOnlyScanIfAvailable)
+			{
+				continue;
+			}
+
+			isBtreeIndex = true;
+			bool hasOtherQuals = false;
+			IndexPath *modified = TrimIndexRestrictInfoForBtreePath(root, indexPath,
+																	&hasOtherQuals);
+			if (hasOtherQuals)
+			{
+				/* Not modified or has non _id quals - skip */
+				continue;
+			}
+
+			if (modified == indexPath)
+			{
+				indexPath = palloc(sizeof(IndexPath));
+				memcpy(indexPath, modified, sizeof(IndexPath));
+			}
+			else
+			{
+				indexPath = modified;
+			}
+		}
+		else
+		{
+			if (indexPath->indexinfo->nkeycolumns < 1 ||
+				!IsOrderBySupportedOnOpClass(indexPath->indexinfo->relam,
+											 indexPath->indexinfo->opfamily[0]))
+			{
+				continue;
+			}
+
+			if (!CompositeIndexSupportsIndexOnlyScan(indexPath))
+			{
+				continue;
+			}
+
+			if (!IndexClausesValidForIndexOnlyScan(indexPath, rel, context))
+			{
+				continue;
+			}
 		}
 
-		if (!IndexClausesValidForIndexOnlyScan(indexPath, rel, context))
+		/* we need to copy the index path and set it as index only scan.
+		 * Also we need to set canreturn to true so that postgres allows the index only scan path. */
+		IndexPath *indexPathCopy;
+		if (!isBtreeIndex)
 		{
-			continue;
+			indexPathCopy = makeNode(IndexPath);
+			memcpy(indexPathCopy, indexPath, sizeof(IndexPath));
+
+			indexPathCopy->indexinfo = palloc(sizeof(IndexOptInfo));
+			memcpy(indexPathCopy->indexinfo, indexPath->indexinfo,
+				   sizeof(IndexOptInfo));
+
+			indexPathCopy->indexinfo->canreturn = palloc0(sizeof(bool) *
+														  indexPathCopy->indexinfo->
+														  ncolumns);
+			indexPathCopy->indexinfo->canreturn[0] = true;
+		}
+		else
+		{
+			/* This is pre-copied by TrimIndexRestrictInfoForBtreePath */
+			indexPathCopy = indexPath;
 		}
 
-		/* we need to copy the index path and set it as index only scan. Also we need to set canreturn to true so that postgres allows the index only scan path. */
-		IndexPath *indexPathCopy = makeNode(IndexPath);
-		memcpy(indexPathCopy, indexPath, sizeof(IndexPath));
-
-		indexPathCopy->indexinfo = palloc(sizeof(IndexOptInfo));
-		memcpy(indexPathCopy->indexinfo, indexPath->indexinfo,
-			   sizeof(IndexOptInfo));
 		indexPathCopy->path.pathtype = T_IndexOnlyScan;
-		indexPathCopy->indexinfo->canreturn = palloc0(sizeof(bool) *
-													  indexPathCopy->indexinfo->ncolumns);
-		indexPathCopy->indexinfo->canreturn[0] = true;
 
 		bool partialPath = false;
 		double loopCount = 1.0;
@@ -1603,12 +1697,24 @@ ConsiderIndexOnlyScan(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
 		addedPaths = lappend(addedPaths, indexPathCopy);
 	}
 
-	ListCell *pathsToAddCell;
-	foreach(pathsToAddCell, addedPaths)
+	if (ForceIndexOnlyScanIfAvailable &&
+		list_length(addedPaths) > 0)
 	{
-		/* now add the new paths */
-		Path *newPath = lfirst(pathsToAddCell);
-		add_path(rel, newPath);
+		/* reset pathlist to only have these */
+		rel->pathlist = addedPaths;
+		rel->partial_pathlist = NIL;
+	}
+	else
+	{
+		ListCell *pathsToAddCell;
+		foreach(pathsToAddCell, addedPaths)
+		{
+			/* now add the new paths */
+			Path *newPath = lfirst(pathsToAddCell);
+			add_path(rel, newPath);
+		}
+
+		list_free(addedPaths);
 	}
 }
 
@@ -1627,6 +1733,82 @@ GetPrimaryKeyIndexOptInfo(RelOptInfo *rel)
 	}
 
 	return NULL;
+}
+
+
+static void
+ConsiderBtreeOrderByPushdown(PlannerInfo *root, IndexPath *indexPath)
+{
+	bool hasOrderBy = false;
+	bool hasGroupby = false;
+	bool isOrderById = false;
+	List *sortDetails = GetSortDetails(root, indexPath->path.parent->relid, &hasOrderBy,
+									   &hasGroupby, &isOrderById);
+
+	if (sortDetails == NIL || !isOrderById)
+	{
+		list_free_deep(sortDetails);
+		return;
+	}
+
+	if (!IsValidIndexPathForIdOrderBy(indexPath, sortDetails))
+	{
+		list_free_deep(sortDetails);
+		return;
+	}
+
+	/*
+	 * We have a single sort and a primary key - consider if
+	 * it is an _id pushdown.
+	 */
+	SortIndexInputDetails *sortDetailsInput = linitial(sortDetails);
+
+	/* The first clause is a shard key equality - can push order by */
+	indexPath->path.pathkeys = list_make1(sortDetailsInput->sortPathKey);
+
+	/* If the sort is descending, we need to scan the index backwards */
+	if (SortPathKeyStrategy(sortDetailsInput->sortPathKey) == BTGreaterStrategyNumber)
+	{
+		indexPath->indexscandir = BackwardScanDirection;
+	}
+
+	list_free_deep(sortDetails);
+}
+
+
+void
+documentdb_btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+						  Cost *indexStartupCost, Cost *indexTotalCost,
+						  Selectivity *indexSelectivity, double *indexCorrelation,
+						  double *indexPages)
+{
+	if (EnableOrderByIdOnCostFunction && EnableIdIndexCustomCostFunction &&
+		list_length(root->query_pathkeys) == 1)
+	{
+		ConsiderBtreeOrderByPushdown(root, path);
+	}
+
+	if (EnableIdIndexCustomCostFunction && EnableIndexOnlyScan &&
+		IsValidForIndexOnlyScans(root))
+	{
+		bool hasOtherQuals = false;
+		IndexPath *modified = TrimIndexRestrictInfoForBtreePath(root, path,
+																&hasOtherQuals);
+		if (!hasOtherQuals)
+		{
+			*path = *modified;
+			path->path.pathtype = T_IndexOnlyScan;
+		}
+
+		if (modified != path)
+		{
+			/* Free if copy */
+			pfree(modified);
+		}
+	}
+
+	btcostestimate(root, path, loop_count, indexStartupCost, indexTotalCost,
+				   indexSelectivity, indexCorrelation, indexPages);
 }
 
 
@@ -1761,14 +1943,67 @@ GetSortDetails(PlannerInfo *root, Index rti,
 }
 
 
+static bool
+IsValidIndexPathForIdOrderBy(IndexPath *indexPath, List *sortDetails)
+{
+	if (indexPath->indexinfo->relam != BTREE_AM_OID ||
+		!IsBtreePrimaryKeyIndex(indexPath->indexinfo))
+	{
+		return false;
+	}
+
+	if (list_length(sortDetails) != 1)
+	{
+		return false;
+	}
+
+	/* We have a single sort and a primary key - consider if
+	 * it is an _id pushdown.
+	 */
+	SortIndexInputDetails *sortDetailsInput = linitial(sortDetails);
+	if (strcmp(sortDetailsInput->sortPath, "_id") != 0)
+	{
+		return false;
+	}
+
+	/*
+	 * We can push down the _id sort to the primary key index
+	 * if and only if there's a shard_key equality.
+	 */
+	if (list_length(indexPath->indexclauses) < 1)
+	{
+		return false;
+	}
+
+	IndexClause *indexClause = linitial(indexPath->indexclauses);
+	if (!IsA(indexClause->rinfo->clause, OpExpr))
+	{
+		return false;
+	}
+
+	OpExpr *opExpr = (OpExpr *) indexClause->rinfo->clause;
+	Expr *firstArg = linitial(opExpr->args);
+	Expr *secondArg = lsecond(opExpr->args);
+
+	if (opExpr->opno != BigintEqualOperatorId() ||
+		!IsA(firstArg, Var) || !IsA(secondArg, Const))
+	{
+		return false;
+	}
+
+	Var *firstVar = (Var *) firstArg;
+	return firstVar->varattno == DOCUMENT_DATA_TABLE_SHARD_KEY_VALUE_VAR_ATTR_NUMBER;
+}
+
+
 void
-ConsiderIndexOrderByPushdown(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
-							 Index rti, ReplaceExtensionFunctionContext *context)
+ConsiderIndexOrderByPushdownForId(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
+								  Index rti, ReplaceExtensionFunctionContext *context)
 {
 	/* In this path, we only consider order by pushdown for the PK index - so we only support
 	 * having a single order by path key
 	 */
-	if (list_length(root->query_pathkeys) != 1)
+	if (EnableOrderByIdOnCostFunction || list_length(root->query_pathkeys) != 1)
 	{
 		return;
 	}
@@ -1813,59 +2048,25 @@ ConsiderIndexOrderByPushdown(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *
 
 		IndexPath *indexPath = (IndexPath *) path;
 		hasIndexPaths = true;
-		if (indexPath->indexinfo->relam == BTREE_AM_OID &&
-			IsBtreePrimaryKeyIndex(indexPath->indexinfo) &&
-			list_length(sortDetails) == 1)
+		if (!IsValidIndexPathForIdOrderBy(indexPath, sortDetails))
 		{
-			/* We have a single sort and a primary key - consider if
-			 * it is an _id pushdown.
-			 */
-			SortIndexInputDetails *sortDetailsInput = linitial(sortDetails);
-			if (strcmp(sortDetailsInput->sortPath, "_id") != 0)
-			{
-				continue;
-			}
-
-			/*
-			 * We can push down the _id sort to the primary key index
-			 * if and only if there's a shard_key equality.
-			 */
-			if (list_length(indexPath->indexclauses) < 1)
-			{
-				continue;
-			}
-
-			IndexClause *indexClause = linitial(indexPath->indexclauses);
-			if (!IsA(indexClause->rinfo->clause, OpExpr))
-			{
-				continue;
-			}
-
-			OpExpr *opExpr = (OpExpr *) indexClause->rinfo->clause;
-			Expr *firstArg = linitial(opExpr->args);
-			Expr *secondArg = lsecond(opExpr->args);
-
-			if (opExpr->opno != BigintEqualOperatorId() ||
-				!IsA(firstArg, Var) || !IsA(secondArg, Const))
-			{
-				continue;
-			}
-
-			/* The first clause is a shard key equality - can push order by */
-			IndexPath *newPath = makeNode(IndexPath);
-			memcpy(newPath, indexPath, sizeof(IndexPath));
-			newPath->path.pathkeys = list_make1(sortDetailsInput->sortPathKey);
-
-			/* If the sort is descending, we need to scan the index backwards */
-			if (SortPathKeyStrategy(sortDetailsInput->sortPathKey) ==
-				BTGreaterStrategyNumber)
-			{
-				newPath->indexscandir = BackwardScanDirection;
-			}
-
-			/* Don't modify the list we're enumerating */
-			pathsToAdd = lappend(pathsToAdd, newPath);
+			continue;
 		}
+
+		/* The first clause is a shard key equality - can push order by */
+		IndexPath *newPath = makeNode(IndexPath);
+		memcpy(newPath, indexPath, sizeof(IndexPath));
+		SortIndexInputDetails *sortDetailsInput = linitial(sortDetails);
+		newPath->path.pathkeys = list_make1(sortDetailsInput->sortPathKey);
+
+		/* If the sort is descending, we need to scan the index backwards */
+		if (SortPathKeyStrategy(sortDetailsInput->sortPathKey) == BTGreaterStrategyNumber)
+		{
+			newPath->indexscandir = BackwardScanDirection;
+		}
+
+		/* Don't modify the list we're enumerating */
+		pathsToAdd = lappend(pathsToAdd, newPath);
 	}
 
 	/* Special case: if there were no index paths and
@@ -2062,14 +2263,25 @@ PopulateQueryPathAndValueFromOpExpr(OpExpr *opExpr, const char **queryPathString
 			Expr *secondArg = lsecond(funcExpr->args);
 			if (IsA(secondArg, Const) && !castNode(Const, secondArg)->constisnull)
 			{
-				Const *thirdConst = (Const *) secondArg;
+				Const *secondConst = (Const *) secondArg;
 
 				pgbsonelement queryElement;
 				PgbsonToSinglePgbsonElementWithCollation(DatumGetPgBson(
-															 thirdConst->
+															 secondConst->
 															 constvalue),
 														 &queryElement);
 				*queryPathString = queryElement.path;
+				return true;
+			}
+		}
+		else if (funcExpr->funcid == BsonDollarMergeExtractFilterFunctionOid() &&
+				 list_length(funcExpr->args) >= 2)
+		{
+			Expr *secondArg = lsecond(funcExpr->args);
+			if (IsA(secondArg, Const) && !castNode(Const, secondArg)->constisnull)
+			{
+				Const *secondConst = (Const *) secondArg;
+				*queryPathString = TextDatumGetCString(secondConst->constvalue);
 				return true;
 			}
 		}
@@ -2708,6 +2920,190 @@ OptimizeIndexExpressionsForRange(List *indexClauses)
 }
 
 
+static IndexPath *
+TrimIndexRestrictInfoForBtreePath(PlannerInfo *root, IndexPath *indexPath,
+								  bool *hasNonIdClauses)
+{
+	List *clauseRestrictInfos = NIL;
+	List *objectIdClauses = NIL;
+	ListCell *cell;
+	bool hasOtherClauses = false;
+	foreach(cell, indexPath->indexclauses)
+	{
+		IndexClause *clause = lfirst(cell);
+		clauseRestrictInfos = lappend(clauseRestrictInfos, clause->rinfo);
+		if (clause->indexcol == 1)
+		{
+			objectIdClauses = lappend(objectIdClauses, clause->rinfo->clause);
+		}
+	}
+
+	/* Now walk the btree index restrict info for a match */
+	List *restrictInfosToRemove = NIL;
+	List *additionalIndexClauses = NIL;
+	foreach(cell, indexPath->indexinfo->indrestrictinfo)
+	{
+		RestrictInfo *rinfo = lfirst(cell);
+		if (list_member(clauseRestrictInfos, rinfo))
+		{
+			continue;
+		}
+
+		if (!IsA(rinfo->clause, OpExpr))
+		{
+			hasOtherClauses = true;
+			continue;
+		}
+
+		OpExpr *clauseExpr = (OpExpr *) rinfo->clause;
+		if (list_length(clauseExpr->args) != 2)
+		{
+			hasOtherClauses = true;
+			continue;
+		}
+
+		if (!IsA(linitial(clauseExpr->args), Var) ||
+			(castNode(Var, linitial(clauseExpr->args))->varattno !=
+			 DOCUMENT_DATA_TABLE_DOCUMENT_VAR_ATTR_NUMBER) ||
+			!IsA(lsecond(clauseExpr->args), Const))
+		{
+			hasOtherClauses = true;
+			continue;
+		}
+
+		Var *firstVar = linitial(clauseExpr->args);
+		Const *secondConst = lsecond(clauseExpr->args);
+		pgbson *qual = DatumGetPgBson(secondConst->constvalue);
+
+		pgbsonelement qualElement;
+		const char *collation = PgbsonToSinglePgbsonElementWithCollation(qual,
+																		 &qualElement);
+		if (collation != NULL)
+		{
+			hasOtherClauses = true;
+			continue;
+		}
+
+		if (qualElement.pathLength != 3 || strcmp(qualElement.path, "_id") != 0)
+		{
+			hasOtherClauses = true;
+			continue;
+		}
+
+		const MongoIndexOperatorInfo *indexOp = GetMongoIndexOperatorByPostgresOperatorId(
+			clauseExpr->opno);
+
+		Expr *primaryKeyExpr = NULL;
+		Expr *secondaryKeyExpr = NULL;
+		switch (indexOp->indexStrategy)
+		{
+			case BSON_INDEX_STRATEGY_DOLLAR_GREATER:
+			{
+				primaryKeyExpr = MakeSimpleIdExpr(&qualElement.bsonValue, firstVar->varno,
+												  BsonGreaterThanOperatorId());
+				secondaryKeyExpr = MakeUpperBoundIdExpr(&qualElement.bsonValue,
+														firstVar->varno);
+				break;
+			}
+
+			case BSON_INDEX_STRATEGY_DOLLAR_GREATER_EQUAL:
+			{
+				primaryKeyExpr = MakeSimpleIdExpr(&qualElement.bsonValue, firstVar->varno,
+												  BsonGreaterThanEqualOperatorId());
+				secondaryKeyExpr = MakeUpperBoundIdExpr(&qualElement.bsonValue,
+														firstVar->varno);
+				break;
+			}
+
+			case BSON_INDEX_STRATEGY_DOLLAR_LESS:
+			{
+				primaryKeyExpr = MakeSimpleIdExpr(&qualElement.bsonValue, firstVar->varno,
+												  BsonLessThanOperatorId());
+				secondaryKeyExpr = MakeLowerBoundIdExpr(&qualElement.bsonValue,
+														firstVar->varno);
+				break;
+			}
+
+			case BSON_INDEX_STRATEGY_DOLLAR_LESS_EQUAL:
+			{
+				primaryKeyExpr = MakeSimpleIdExpr(&qualElement.bsonValue, firstVar->varno,
+												  BsonLessThanEqualOperatorId());
+				secondaryKeyExpr = MakeLowerBoundIdExpr(&qualElement.bsonValue,
+														firstVar->varno);
+				break;
+			}
+
+			case BSON_INDEX_STRATEGY_DOLLAR_EQUAL:
+			{
+				primaryKeyExpr = MakeSimpleIdExpr(&qualElement.bsonValue, firstVar->varno,
+												  BsonEqualOperatorId());
+				break;
+			}
+
+			default:
+			{
+				hasOtherClauses = true;
+				continue;
+			}
+		}
+
+		additionalIndexClauses = lappend(additionalIndexClauses, primaryKeyExpr);
+		if (secondaryKeyExpr != NULL)
+		{
+			additionalIndexClauses = lappend(additionalIndexClauses, secondaryKeyExpr);
+		}
+
+		restrictInfosToRemove = lappend(restrictInfosToRemove, rinfo);
+	}
+
+	list_free(clauseRestrictInfos);
+	if (list_length(additionalIndexClauses) == 0)
+	{
+		*hasNonIdClauses = hasOtherClauses;
+		return indexPath;
+	}
+
+	IndexPath *indexPathCopy = palloc(sizeof(IndexPath));
+	memcpy(indexPathCopy, indexPath, sizeof(IndexPath));
+
+	IndexOptInfo *indexInfoCopy = palloc(sizeof(IndexOptInfo));
+	memcpy(indexInfoCopy, indexPath->indexinfo, sizeof(IndexOptInfo));
+	indexInfoCopy->indrestrictinfo = list_difference_ptr(indexInfoCopy->indrestrictinfo,
+														 restrictInfosToRemove);
+	indexPathCopy->indexinfo = indexInfoCopy;
+
+	List *origList = indexPathCopy->indexclauses;
+	foreach(cell, additionalIndexClauses)
+	{
+		Expr *clause = lfirst(cell);
+		if (list_member(objectIdClauses, clause))
+		{
+			continue;
+		}
+
+		RestrictInfo *additionalRestrictInfo =
+			make_simple_restrictinfo(root, clause);
+		IndexClause *singleIndexClause = makeNode(IndexClause);
+		singleIndexClause->rinfo = additionalRestrictInfo;
+		singleIndexClause->indexquals = list_make1(additionalRestrictInfo);
+		singleIndexClause->lossy = false;
+		singleIndexClause->indexcol = 1;
+		singleIndexClause->indexcols = NIL;
+
+		if (origList == indexPathCopy->indexclauses)
+		{
+			origList = list_copy(indexPathCopy->indexclauses);
+		}
+
+		origList = lappend(origList, singleIndexClause);
+	}
+
+	indexPathCopy->indexclauses = origList;
+	*hasNonIdClauses = hasOtherClauses;
+	return indexPathCopy;
+}
+
+
 /*
  * This function walks all the necessary qualifiers in a query Plan "Path"
  * Note that this currently replaces all the bson_dollar_<op> function calls
@@ -2754,11 +3150,13 @@ ReplaceFunctionOperatorsInPlanPath(PlannerInfo *root, RelOptInfo *rel, Path *pat
 		 * This can happen because a RUM index lookup can produce a 0 cost query as well
 		 * and Postgres picks both and does a BitmapAnd - instead rely on a top level index path.
 		 */
+		bool isPrimaryKeyIndexPath = false;
 		if (IsBtreePrimaryKeyIndex(indexPath->indexinfo) &&
 			list_length(indexPath->indexclauses) > 1 &&
 			parentType != PARENTTYPE_INVALID)
 		{
 			context->primaryKeyLookupPath = indexPath;
+			isPrimaryKeyIndexPath = true;
 		}
 
 		const VectorIndexDefinition *vectorDefinition = NULL;
@@ -2830,6 +3228,16 @@ ReplaceFunctionOperatorsInPlanPath(PlannerInfo *root, RelOptInfo *rel, Path *pat
 		}
 
 		indexPath = OptimizeIndexPathForFilters(indexPath, context);
+
+		/* For btree indexscans ensure that we trim alternate quals */
+		if (isPrimaryKeyIndexPath &&
+			EnableIdIndexPushdown &&
+			indexPath->path.pathtype != T_IndexOnlyScan)
+		{
+			bool hasOtherQualsIgnore = false;
+			path = (Path *) TrimIndexRestrictInfoForBtreePath(root, indexPath,
+															  &hasOtherQualsIgnore);
+		}
 	}
 
 	return path;
@@ -3693,8 +4101,7 @@ TryUseAlternateIndexForIndexHint(PlannerInfo *root, RelOptInfo *rel,
 	if (IsBsonRegularIndexAm(matchedInfo->relam))
 	{
 		bytea *opClassOptions = matchedInfo->opclassoptions[0];
-		if (opClassOptions == NULL &&
-			IsUniqueCheckOpFamilyOid(matchedInfo->relam, matchedInfo->opfamily[0]))
+		if (IsUniqueCheckOpFamilyOid(matchedInfo->relam, matchedInfo->opfamily[0]))
 		{
 			/* For unique indexes, the first column is the shard key constraint */
 			opClassOptions = matchedInfo->opclassoptions[1];
@@ -3780,8 +4187,7 @@ static bool
 EnableIndexHintForceIndexPushdown(PlannerInfo *root,
 								  ReplaceExtensionFunctionContext *context)
 {
-	return EnableIndexHintSupport &&
-		   IsClusterVersionAtleast(DocDB_V0, 106, 0);
+	return IsClusterVersionAtleast(DocDB_V0, 106, 0);
 }
 
 

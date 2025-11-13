@@ -39,6 +39,8 @@
 #define RUM_LEFT_DISTANCE 21
 #define RUM_RIGHT_DISTANCE 22
 
+typedef uint16 RumVacuumCycleId;
+
 /*
  * Page opaque data in a inverted index page.
  *
@@ -54,12 +56,19 @@ typedef struct RumPageOpaqueData
 {
 	BlockNumber leftlink;       /* prev page if any */
 	BlockNumber rightlink;      /* next page if any */
-	OffsetNumber maxoff;        /* number entries on RUM_DATA page: number of
-	                             * heap ItemPointers on RUM_DATA|RUM_LEAF page
-	                             * or number of PostingItems on RUM_DATA &
-	                             * ~RUM_LEAF page. */
-	OffsetNumber freespace;
+	union
+	{
+		OffsetNumber dataPageMaxoff;        /* number entries on RUM_DATA page: number of
+		                                     * heap ItemPointers on RUM_DATA|RUM_LEAF page
+		                                     * or number of PostingItems on RUM_DATA &
+		                                     * ~RUM_LEAF page. */
+
+		OffsetNumber entryPageUnused;
+	};
+
+	OffsetNumber dataPageFreespace;
 	uint16 flags;               /* see bit definitions below */
+	RumVacuumCycleId cycleId; /* The vacuum cycleId */
 }   RumPageOpaqueData;
 
 typedef RumPageOpaqueData *RumPageOpaque;
@@ -69,7 +78,13 @@ typedef RumPageOpaqueData *RumPageOpaque;
 #define RUM_DELETED (1 << 2)
 #define RUM_META (1 << 3)
 
+/* The page has only dead tuples (the equivalent)
+ * of LP_DEAD for posting tree pages.
+ */
+
 /* DEPRECATED (REUSABLE): #define RUM_LIST (1 << 4) */
+#define RUM_PAGE_IS_DEAD_ROWS (1 << 4)
+
 /* DEPRECATED (REUSABLE): #define RUM_LIST_FULLROW (1 << 5) */
 #define RUM_HALF_DEAD (1 << 6)
 #define RUM_INCOMPLETE_SPLIT (1 << 7)   /* page was split, but parent not updated */
@@ -137,6 +152,9 @@ typedef struct RumMetaPageData
  */
 #define RumPageGetOpaque(page) ((RumPageOpaque) PageGetSpecialPointer(page))
 
+#define RumPageRightLink(page) (RumPageGetOpaque(page)->rightlink)
+#define RumPageLeftLink(page) (RumPageGetOpaque(page)->leftlink)
+
 #define RumPageIsLeaf(page) ((RumPageGetOpaque(page)->flags & RUM_LEAF) != 0)
 #define RumPageSetLeaf(page) (RumPageGetOpaque(page)->flags |= RUM_LEAF)
 #define RumPageSetNonLeaf(page) (RumPageGetOpaque(page)->flags &= ~RUM_LEAF)
@@ -156,6 +174,8 @@ typedef struct RumMetaPageData
 #define RumPageIsIncompleteSplit(page) ((RumPageGetOpaque(page)->flags & \
 										 RUM_INCOMPLETE_SPLIT) != 0)
 
+#define RumPageGetCycleId(page) (RumPageGetOpaque(page)->cycleId)
+
 /*
  * Set the XMIN based of the half-dead page based on maxoff and freespace (these are only
  * used in dataPage). When the XID horizon goes past this, we will mark the page as deleted.
@@ -166,6 +186,30 @@ typedef struct RumMetaPageData
 
 #define RumPageRightMost(page) (RumPageGetOpaque(page)->rightlink == InvalidBlockNumber)
 #define RumPageLeftMost(page) (RumPageGetOpaque(page)->leftlink == InvalidBlockNumber)
+
+/* Dealing with LP_DEAD on entry tree */
+#define RumIndexEntryIsDead(itemId) (ItemIdIsDead(itemId))
+#define RumIndexEntryMarkDead(itemId) (ItemIdMarkDead(itemId))
+#define RumIndexEntryRevive(itemId) \
+	( \
+		(itemId)->lp_flags = LP_NORMAL \
+	)
+
+
+/* Dealing with LP_DEAD on Posting tree page */
+#define RumDataPageEntryIsDead(page) ((RumPageGetOpaque(page)->flags & \
+									   RUM_PAGE_IS_DEAD_ROWS) != 0)
+#define RumDataPageEntryMarkDead(page) (RumPageGetOpaque(page)->flags |= \
+											RUM_PAGE_IS_DEAD_ROWS)
+#define RumDataPageEntryRevive(page) (RumPageGetOpaque(page)->flags &= \
+										  ~RUM_PAGE_IS_DEAD_ROWS)
+
+/* Upper bound for number of TIDs per page. beyond this if the Postinglist
+ * compresses, we won't store them.
+ * various code already assumes BLCKSZ * RumItem for the in memory cached
+ * set of TIDs per page so reuse that here.
+ */
+#define MaxTIDsPerRumPage BLCKSZ
 
 /*
  * We use our own ItemPointerGet(BlockNumber|GetOffsetNumber)
@@ -346,20 +390,17 @@ typedef signed char RumNullCategory;
 #define RumDataPageGetFreeSpace(page) \
 	(BLCKSZ - MAXALIGN(SizeOfPageHeaderData) \
 	 - MAXALIGN(sizeof(RumItem)) /* right bound */ \
-	 - RumPageGetOpaque(page)->maxoff * sizeof(RumPostingItem) \
+	 - RumPageGetOpaque(page)->dataPageMaxoff * sizeof(RumPostingItem) \
 	 - MAXALIGN(sizeof(RumPageOpaqueData)))
+
+#define RumDataPageMaxOff(page) (RumPageGetOpaque(page)->dataPageMaxoff)
+#define RumDataPageReadFreeSpaceValue(page) (RumPageGetOpaque(page)->dataPageFreespace)
 
 #define RumMaxLeafDataItems \
 	((BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - \
 	  MAXALIGN(sizeof(RumItem)) /* right bound */ - \
 	  MAXALIGN(sizeof(RumPageOpaqueData))) \
 	 / sizeof(ItemPointerData))
-
-/*
- * List pages
- */
-#define RumListPageSize \
-	(BLCKSZ - SizeOfPageHeaderData - MAXALIGN(sizeof(RumPageOpaqueData)))
 
 typedef struct
 {
@@ -481,11 +522,10 @@ typedef struct RumState
 #endif
 
 /* rumutil.c */
-extern PGDLLEXPORT bytea * documentdb_rumoptions(Datum reloptions, bool validate);
+extern PGDLLIMPORT bytea * documentdb_rumoptions(Datum reloptions, bool validate);
 extern bool rumproperty(Oid index_oid, int attno,
 						IndexAMProperty prop, const char *propname,
 						bool *res, bool *isnull);
-extern PGDLLEXPORT Datum documentdb_rumhandler(PG_FUNCTION_ARGS);
 extern void initRumState(RumState *state, Relation index);
 extern Buffer RumNewBuffer(Relation index);
 extern void RumInitBuffer(GenericXLogState *state, Buffer buffer, uint32 flags,
@@ -783,6 +823,7 @@ typedef struct RumScanEntryData
 	RumItem *list;
 	int16 nlist;
 	int16 offset;
+	XLogRecPtr cachedLsn;
 
 	ScanDirection scanDirection;
 	bool isFinished;
@@ -891,6 +932,12 @@ typedef struct RumScanOpaqueData
 	/* documentdb: whether or not to use a simple scanGetNextItem in rumgettuple */
 	bool useSimpleScan;
 
+	/* LP_DEAD stuff */
+	ItemPointerData *killedItems;
+	int numKilled;
+	bool ignoreKilledTuples;
+	uint32_t killedItemsSkipped;
+
 	/* stateContext to hold state from rumstate (documentdb: This is new ) */
 	MemoryContext rumStateCtx;
 
@@ -912,6 +959,7 @@ extern void freeScanKeys(RumScanOpaque so);
 /* rumget.c */
 extern int64 rumgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern bool rumgettuple(IndexScanDesc scan, ScanDirection direction);
+extern void RumKillEntryItems(RumScanOpaque so, RumOrderByScanData *scanData);
 
 /* rumvacuum.c */
 extern IndexBulkDeleteResult * rumbulkdelete(IndexVacuumInfo *info,
@@ -920,6 +968,14 @@ extern IndexBulkDeleteResult * rumbulkdelete(IndexVacuumInfo *info,
 											 void *callback_state);
 extern IndexBulkDeleteResult * rumvacuumcleanup(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *stats);
+
+
+/* rumvacuumutil.c */
+extern void InitializeRumVacuumState(void);
+extern RumVacuumCycleId rum_start_vacuum_cycle_id(Relation rel);
+extern void rum_end_vacuum_cycle_id(Relation rel);
+extern RumVacuumCycleId rum_vacuum_get_cycleId(Relation rel);
+
 
 /* rumvalidate.c */
 extern bool rumvalidate(Oid opclassoid);
@@ -933,7 +989,7 @@ typedef RBNode RBTNode;
 #endif
 
 /* rumselfuncs.c */
-extern PGDLLEXPORT void documentdb_rum_costestimate(struct PlannerInfo *root, struct
+extern PGDLLIMPORT void documentdb_rum_costestimate(struct PlannerInfo *root, struct
 													IndexPath *path, double
 													loop_count,
 													Cost *indexStartupCost,
@@ -1000,41 +1056,33 @@ extern RumItem * rumGetBAEntry(BuildAccumulator *accum,
 /* NProcs changes for documentdb from 10 to 12 */
 #define RUMNProcs 12
 
-
-#define RUM_DEFAULT_THROW_ERROR_ON_INVALID_DATA_PAGE false
-#define RUM_DEFAULT_DISABLE_FAST_SCAN false
-#define RUM_DEFAULT_ENABLE_PARALLEL_INDEX_BUILD true
-#define RUM_DEFAULT_PARALLEL_INDEX_WORKERS_OVERRIDE -1
-#define RUM_DEFAULT_SKIP_RETRY_ON_DELETE_PAGE true
-#define DEFAULT_FORCE_RUM_ORDERED_INDEX_SCAN false
-#define RUM_DEFAULT_PREFER_ORDERED_INDEX_SCAN true
-#define RUM_DEFAULT_ENABLE_SKIP_INTERMEDIATE_ENTRY true
-#define RUM_DEFAULT_VACUUM_ENTRY_ITEMS true
-#define RUM_DEFAULT_USE_NEW_ITEM_PTR_DECODING true
 #define RUM_DEFAULT_TRACK_INCOMPLETE_SPLIT true
 #define RUM_DEFAULT_FIX_INCOMPLETE_SPLIT true
-#define RUM_DEFAULT_ENABLE_INJECT_PAGE_SPLIT_INCOMPLETE false
-#define RUM_ENABLE_PARALLEL_VACUUM_FLAGS true
-#define RUM_DEFAULT_ENABLE_CUSTOM_COST_ESTIMATE true
 
 /* GUC parameters */
-extern PGDLLEXPORT int RumFuzzySearchLimit;
-extern PGDLLEXPORT int RumDataPageIntermediateSplitSize;
-extern PGDLLEXPORT bool RumThrowErrorOnInvalidDataPage;
-extern PGDLLEXPORT bool RumDisableFastScan;
-extern PGDLLEXPORT bool RumEnableParallelIndexBuild;
-extern PGDLLEXPORT int RumParallelIndexWorkersOverride;
-extern PGDLLEXPORT bool RumSkipRetryOnDeletePage;
-extern PGDLLEXPORT bool RumForceOrderedIndexScan;
-extern PGDLLEXPORT bool RumPreferOrderedIndexScan;
-extern PGDLLEXPORT bool RumEnableSkipIntermediateEntry;
-extern PGDLLEXPORT bool RumVacuumEntryItems;
-extern PGDLLEXPORT bool RumUseNewItemPtrDecoding;
-extern PGDLLEXPORT bool RumTrackIncompleteSplit;
-extern PGDLLEXPORT bool RumFixIncompleteSplit;
-extern PGDLLEXPORT bool RumInjectPageSplitIncomplete;
-extern PGDLLEXPORT bool RumEnableParallelVacuumFlags;
-extern PGDLLEXPORT bool RumEnableCustomCostEstimate;
+extern PGDLLIMPORT int RumFuzzySearchLimit;
+extern PGDLLIMPORT int RumDataPageIntermediateSplitSize;
+extern PGDLLIMPORT bool RumThrowErrorOnInvalidDataPage;
+extern PGDLLIMPORT bool RumDisableFastScan;
+extern PGDLLIMPORT bool RumEnableParallelIndexBuild;
+extern PGDLLIMPORT int RumParallelIndexWorkersOverride;
+extern PGDLLIMPORT bool RumSkipRetryOnDeletePage;
+extern PGDLLIMPORT bool RumForceOrderedIndexScan;
+extern PGDLLIMPORT bool RumPreferOrderedIndexScan;
+extern PGDLLIMPORT bool RumEnableSkipIntermediateEntry;
+extern PGDLLIMPORT bool RumVacuumEntryItems;
+extern PGDLLIMPORT bool RumUseNewItemPtrDecoding;
+extern PGDLLIMPORT bool RumPruneEmptyPages;
+extern PGDLLIMPORT bool RumTrackIncompleteSplit;
+extern PGDLLIMPORT bool RumFixIncompleteSplit;
+extern PGDLLIMPORT bool RumInjectPageSplitIncomplete;
+extern PGDLLIMPORT bool RumEnableParallelVacuumFlags;
+extern PGDLLIMPORT bool RumEnableCustomCostEstimate;
+extern PGDLLIMPORT bool RumEnableNewBulkDelete;
+extern PGDLLIMPORT bool RumNewBulkDeleteInlineDataPages;
+extern PGDLLIMPORT bool RumVacuumSkipPrunePostingTreePages;
+extern PGDLLIMPORT bool RumEnableSupportDeadIndexItems;
+extern PGDLLIMPORT bool RumSkipResetOnDeadEntryPage;
 
 /*
  * Functions for reading ItemPointers with additional information. Used in
@@ -1552,15 +1600,12 @@ extern Datum FunctionCall10Coll(FmgrInfo *flinfo, Oid collation,
 #define PROGRESS_RUM_PHASE_MERGE_1 4
 #define PROGRESS_RUM_PHASE_PERFORMSORT_2 5
 #define PROGRESS_RUM_PHASE_MERGE_2 6
+#define PROGRESS_RUM_PHASE_WRITE_WAL 7
 
-struct ExplainState;
-extern PGDLLEXPORT void try_explain_documentdb_rum_index(IndexScanDesc scan,
-														 struct ExplainState *es);
-extern PGDLLEXPORT bool can_documentdb_rum_index_scan_ordered(IndexScanDesc scan);
 
 #define UNREDACTED_RUM_LOG_CODE MAKE_SQLSTATE('R', 'Z', 'Z', 'Z', 'Z')
 typedef int (*rum_format_log_hook)(const char *fmt, ...) pg_attribute_printf (1, 2);
-extern PGDLLEXPORT rum_format_log_hook rum_unredacted_log_emit_hook;
+extern PGDLLIMPORT rum_format_log_hook rum_unredacted_log_emit_hook;
 
 #define errmsg_unredacted(...) \
 	(rum_unredacted_log_emit_hook ? \

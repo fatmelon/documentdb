@@ -149,9 +149,6 @@ SELECT documentdb_api.create_user('{"$db":"admin"}');
 --Get all users
 SELECT documentdb_api.users_info('{"usersInfo":1, "$db":"admin"}');
 
---Get all users for all DBs
-SELECT documentdb_api.users_info('{"forAllDBs":true, "$db":"admin"}');
-
 --Test SQL injection attack
 SELECT documentdb_api.create_user('{"createUser":"test_user_injection_attack", "pwd":"; DROP TABLE users; --", "roles":[{"role":"readAnyDatabase","db":"admin"}], "$db":"admin"}');
 
@@ -200,21 +197,22 @@ SELECT documentdb_api.create_user('{"createUser":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbb
 SELECT current_user as original_user \gset
 
 -- Call usersInfo with showPrivileges set to true
-SELECT documentdb_api.users_info('{"usersInfo":1, "showPrivileges":true, "$db":"admin"}');
 SELECT documentdb_api.users_info('{"usersInfo":"test_user", "showPrivileges":true, "$db":"admin"}');
 SELECT documentdb_api.users_info('{"usersInfo":"test_user", "showPrivileges":false, "$db":"admin"}');
 SELECT documentdb_api.users_info('{"usersInfo":"adminUser", "showPrivileges":true, "$db":"admin"}');
 SELECT documentdb_api.users_info('{"usersInfo":"adminUser", "showPrivileges":false, "$db":"admin"}');
 
+-- Test usersInfo command with usersInfo set to 1 and showPrivileges set to true, should fail
+SELECT documentdb_api.users_info('{"usersInfo":1, "showPrivileges":true, "$db":"admin"}');
+
 -- Test usersInfo command with enableUserInfoPrivileges set to false
 SET documentdb.enableUsersInfoPrivileges TO OFF;
-SELECT documentdb_api.users_info('{"usersInfo":1, "showPrivileges":true, "$db":"admin"}');
 SELECT documentdb_api.users_info('{"usersInfo":"test_user", "showPrivileges":true, "$db":"admin"}');
 SELECT documentdb_api.users_info('{"usersInfo":"adminUser", "showPrivileges":true, "$db":"admin"}');
 RESET documentdb.enableUsersInfoPrivileges;
 
 -- switch to read only user
-\c regression readOnlyUser
+\c - readOnlyUser
 
 --Create without privileges
 SELECT documentdb_api.create_user('{"createUser":"newUser", "pwd":"test_password", "roles":[{"role":"readAnyDatabase","db":"admin"}], "$db":"admin"}');
@@ -223,7 +221,7 @@ SELECT documentdb_api.create_user('{"createUser":"newUser", "pwd":"test_password
 SELECT documentdb_api.drop_user('{"dropUser":"test_user", "$db":"admin"}');
 
 -- switch to admin user
-\c regression adminUser
+\c - adminUser
 
 -- Test connectionStatus command without showPrivileges parameter
 SELECT documentdb_api.connection_status('{"connectionStatus": 1, "$db":"admin"}');
@@ -235,7 +233,10 @@ SELECT documentdb_api.connection_status('{"connectionStatus": 1, "showPrivileges
 -- Test connectionStatus command with no parameters, should fail
 SELECT documentdb_api.connection_status();
 
--- Test connectionStatus command with invalid parameters
+-- Test connectionStatus command with non-int value
+SELECT documentdb_api.connection_status('{"connectionStatus": "1", "$db":"admin"}');
+
+-- Test connectionStatus command with non-1 value
 SELECT documentdb_api.connection_status('{"connectionStatus": 0, "$db":"admin"}');
 
 -- Test connectionStatus command with no $db parameter, should fail
@@ -264,7 +265,7 @@ SELECT documentdb_api.update_user('{"updateUser":"test_user", "pwd":"new_passwor
 SELECT documentdb_api.drop_user('{"dropUser":"test_user5", "$db":"admin"}');
 
 -- switch back to original user
-\c regression :original_user
+\c - :original_user
 
 --set Feature flag for user crud
 SET documentdb.enableUserCrud TO ON;

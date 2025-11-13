@@ -5,7 +5,16 @@ set -e
 # fail if trying to reference a variable that is not set.
 set -u
 
-PG_VERSION=${PG_VERSION_USED:-16}
+PG_VERSION=16
+
+# Overrides from environment
+if [ "${PG_VERSION_USED:-}" != "" ]; then
+  PG_VERSION=$PG_VERSION_USED
+elif [ "${PGVERSION_USED:-}" != "" ]; then
+  PG_VERSION=${PGVERSION_USED}
+fi
+
+
 coordinatorPort="9712"
 postgresDirectory=""
 initSetup="false"
@@ -18,7 +27,9 @@ gatewayWorker="false"
 useDocumentdbExtendedRum="false"
 customAdminUser="docdb_admin"
 customAdminUserPassword="Admin100"
-while getopts "d:p:u:a:hcsxegr" opt; do
+valgrindMode="false"
+extraConfigFile=""
+while getopts "d:p:u:a:hcsxegrvf:" opt; do
   case $opt in
     d) postgresDirectory="$OPTARG"
     ;;
@@ -42,6 +53,10 @@ while getopts "d:p:u:a:hcsxegr" opt; do
     u) customAdminUser="$OPTARG"
     ;;
     a) customAdminUserPassword="$OPTARG"
+    ;;
+    v) valgrindMode="true"
+    ;;
+    f) extraConfigFile="$OPTARG"
     ;;
   esac
 
@@ -77,6 +92,8 @@ if [ "$help" == "true" ]; then
     echo "${green}[-a <password>] - optional argument. Specifies the password for the custom admin user"
     echo "${green}[-g] - optional argument. starts the gateway worker host along with the backend"
     echo "${green}[-r] - optional argument. use the pg_documentdb_extended_rum extension instead of rum"
+    echo "${green}[-v] - optional argument. run via valgrind mode"
+    echo "${green}[-f <file>] - optional argument. add this extra conf file to postgresql.conf"
     echo "${green}if postgresDir not specified assumed to be $HOME/.documentdb/data"
     exit 1;
 fi
@@ -160,6 +177,14 @@ fi
 echo "${green}Stopping any existing postgres servers${reset}"
 StopServer $postgresDirectory
 
+pg_config_path=$(GetPGConfig $PG_VERSION)
+
+if [ "$valgrindMode" == "true" ]; then
+  # Disable valgrind on shutdown.
+  echo "Disabling valgrind on server with pg_config $pg_config_path"
+  sudo $scriptDir/set_valgrind_on_postgres.sh -d -p $pg_config_path
+fi
+
 if [ "$stop" == "true" ]; then
   exit 0;
 fi
@@ -187,29 +212,51 @@ if [ "$gatewayWorker" == "true" ]; then
   echo "documentdb_gateway.setup_configuration_file = '$setupConfigurationFile'" >> $postgresConfigFile
 fi
 
-if [ "$useDocumentdbExtendedRum" == "true" ]; then
+if [ "$useDocumentdbExtendedRum" == "true" ] && [ "$initSetup" == "true" ]; then
   echo "${green}Configuring PostgreSQL to use pg_documentdb_extended_rum extension instead of rum${reset}"
   echo "documentdb.rum_library_load_option = 'require_documentdb_extended_rum'" >> $postgresConfigFile
   echo "documentdb.alternate_index_handler_name = 'extended_rum'" >> $postgresConfigFile
 fi
 
+if [ "$extraConfigFile" != "" ]; then
+  echo "include '$extraConfigFile'" >> $postgresConfigFile
+fi
+
 userName=$(whoami)
-sudo mkdir -p /var/run/postgresql
-sudo chown -R $userName:$userName /var/run/postgresql
+if [ ! -d /var/run/postgresql ]; then
+  sudo mkdir -p /var/run/postgresql
+  sudo chown -R $userName:$userName /var/run/postgresql
+fi
 
 StartServer $postgresDirectory $coordinatorPort
 
 if [ "$initSetup" == "true" ]; then
   SetupPostgresServerExtensions "$userName" $coordinatorPort $extensionName
-  SetupCustomAdminUser "$customAdminUser" "$customAdminUserPassword" $coordinatorPort "$userName"
+
+  if [ "$useDocumentdbExtendedRum" == "true" ] && [ "$initSetup" == "true" ]; then
+    psql -p $coordinatorPort -d postgres -c "CREATE EXTENSION documentdb_extended_rum"
+  fi
+
+  if [ "$distributed" == "true" ]; then
+    psql -p $coordinatorPort -d postgres -c "SELECT citus_set_coordinator_host('localhost', $coordinatorPort);"
+    AddNodeToCluster $coordinatorPort $coordinatorPort
+    psql -p $coordinatorPort -d postgres -c "SELECT documentdb_api_distributed.initialize_cluster()"
+  fi
+  if [ "$customAdminUser" != "" ]; then
+    SetupCustomAdminUser "$customAdminUser" "$customAdminUserPassword" $coordinatorPort "$userName"
+  fi
 fi
 
-if [ "$useDocumentdbExtendedRum" == "true" ]; then
-  psql -p $coordinatorPort -d postgres -c "CREATE EXTENSION documentdb_extended_rum"
+if [ "$valgrindMode" == "true" ]; then
+  # Ensure that initdb is not run via valgrind
+  StopServer $postgresDirectory
+  echo "Enabling valgrind on server"
+  if [ "${ENABLE_VALGRIND_DEBUGGING:-}" == "1" ]; then
+    sudo $scriptDir/set_valgrind_on_postgres.sh -e -x -p $pg_config_path
+  else
+    sudo $scriptDir/set_valgrind_on_postgres.sh -e -p $pg_config_path
+  fi
+  StartServer $postgresDirectory $coordinatorPort $postgresDirectory/pglog.log "-W"
 fi
 
-if [ "$distributed" == "true" ]; then
-  psql -p $coordinatorPort -d postgres -c "SELECT citus_set_coordinator_host('localhost', $coordinatorPort);"
-  AddNodeToCluster $coordinatorPort $coordinatorPort
-fi
 . $scriptDir/setup_psqlrc.sh

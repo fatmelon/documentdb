@@ -134,6 +134,8 @@ extern bool EnableIndexPriorityOrdering;
 extern bool EnableLogRelationIndexesOrder;
 extern bool ForceBitmapScanForLookup;
 extern bool EnableIndexOnlyScan;
+extern bool EnableCursorsOnAggregationQueryRewrite;
+extern bool EnableIdIndexCustomCostFunction;
 
 planner_hook_type ExtensionPreviousPlannerHook = NULL;
 set_rel_pathlist_hook_type ExtensionPreviousSetRelPathlistHook = NULL;
@@ -517,7 +519,7 @@ ExtensionRelPathlistHookCoreNew(PlannerInfo *root, RelOptInfo *rel, Index rti,
 
 	if (EnableIndexOrderbyPushdown)
 	{
-		ConsiderIndexOrderByPushdown(root, rel, rte, rti, &indexContext);
+		ConsiderIndexOrderByPushdownForId(root, rel, rte, rti, &indexContext);
 	}
 
 	if (EnableIndexOnlyScan)
@@ -781,6 +783,16 @@ ExtensionGetRelationInfoHookCore(PlannerInfo *root, Oid relationObjectId,
 	if (EnableIndexPriorityOrdering && rel->indexlist != NIL)
 	{
 		list_sort(rel->indexlist, CompareIndexOptionsFunc);
+	}
+
+	/* In this path btree will be first if any */
+	if (EnableIdIndexCustomCostFunction && list_length(rel->indexlist) > 0)
+	{
+		IndexOptInfo *firstIndex = linitial(rel->indexlist);
+		if (firstIndex->relam == BTREE_AM_OID)
+		{
+			firstIndex->amcostestimate = documentdb_btcostestimate;
+		}
 	}
 
 	if (EnableLogRelationIndexesOrder)
@@ -1785,6 +1797,11 @@ ExpandAggregationFunction(Query *query, ParamListInfo boundParams, PlannedStmt *
 
 		/* For point reads, allow for fast path planning */
 		*plan = TryCreatePointReadPlan(finalQuery);
+	}
+
+	if (EnableCursorsOnAggregationQueryRewrite)
+	{
+		ereport(DEBUG1, (errmsg("Aggregation cursorKind is %d", queryData.cursorKind)));
 	}
 
 	return finalQuery;

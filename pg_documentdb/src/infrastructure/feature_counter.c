@@ -229,6 +229,8 @@ static char FeatureMapping[MAX_FEATURE_COUNT][MAX_FEATURE_NAME_LENGTH] = {
 	[FEATURE_COMMAND_INSERT_BULK] = "command_insert_bulk",
 	[FEATURE_COMMAND_LIST_COLLECTIONS_CURSOR_FIRST_PAGE] =
 		"command_list_collections_cursor_first_page",
+	[FEATURE_COMMAND_LIST_DATABASES] =
+		"command_list_databases",
 	[FEATURE_COMMAND_LIST_INDEXES_CURSOR_FIRST_PAGE] =
 		"command_list_indexes_cursor_first_page",
 	[FEATURE_COMMAND_SHARD_COLLECTION] = "command_shard_collection",
@@ -248,6 +250,8 @@ static char FeatureMapping[MAX_FEATURE_COUNT][MAX_FEATURE_NAME_LENGTH] = {
 	[FEATURE_COMMAND_COLLMOD_VALIDATION] = "collMod_validation",
 	[FEATURE_COMMAND_COLLMOD_TTL_UPDATE] = "collMod_ttl_update",
 	[FEATURE_COMMAND_COLLMOD_INDEX_HIDDEN] = "collMod_index_hidden",
+	[FEATURE_COMMAND_COLLMOD_INDEX_PREPARE_UNIQUE] = "collMod_index_prepare_unique",
+	[FEATURE_COMMAND_COLLMOD_UNIQUE] = "collMod_index_unique",
 
 	/* Feature Connection Status */
 	[FEATURE_CONNECTION_STATUS] = "connection_status",
@@ -261,6 +265,7 @@ static char FeatureMapping[MAX_FEATURE_COUNT][MAX_FEATURE_NAME_LENGTH] = {
 	[FEATURE_CREATE_INDEX_TEXT] = "create_index_text",
 	[FEATURE_CREATE_INDEX_TTL] = "create_index_ttl",
 	[FEATURE_CREATE_INDEX_UNIQUE] = "create_index_unique",
+	[FEATURE_CREATE_INDEX_BUILD_AS_UNIQUE] = "create_index_build_as_unique",
 	[FEATURE_CREATE_INDEX_VECTOR] = "create_index_vector",
 	[FEATURE_CREATE_INDEX_VECTOR_COS] = "create_index_vector_cos",
 	[FEATURE_CREATE_INDEX_VECTOR_COMPRESSION_HALF] =
@@ -396,7 +401,22 @@ static char FeatureMapping[MAX_FEATURE_COUNT][MAX_FEATURE_NAME_LENGTH] = {
 	[FEATURE_STAGE_VECTOR_SEARCH_NATIVE] = "vector_search_native",
 
 	/* Feature Mapping region - Update operators */
+	[FEATURE_UPDATE_OPERATOR_ADDTOSET] = "update_operator_addtoset",
+	[FEATURE_UPDATE_OPERATOR_BIT] = "update_operator_bit",
+	[FEATURE_UPDATE_OPERATOR_CURRENTDATE] = "update_operator_currentdate",
 	[FEATURE_UPDATE_OPERATOR_GEN_EMBEDDINGS] = "update_operator_vector_gen_embeddings",
+	[FEATURE_UPDATE_OPERATOR_INC] = "update_operator_inc",
+	[FEATURE_UPDATE_OPERATOR_MAX] = "update_operator_max",
+	[FEATURE_UPDATE_OPERATOR_MIN] = "update_operator_min",
+	[FEATURE_UPDATE_OPERATOR_MUL] = "update_operator_mul",
+	[FEATURE_UPDATE_OPERATOR_POP] = "update_operator_pop",
+	[FEATURE_UPDATE_OPERATOR_PULL] = "update_operator_pull",
+	[FEATURE_UPDATE_OPERATOR_PULLALL] = "update_operator_pullall",
+	[FEATURE_UPDATE_OPERATOR_PUSH] = "update_operator_push",
+	[FEATURE_UPDATE_OPERATOR_RENAME] = "update_operator_rename",
+	[FEATURE_UPDATE_OPERATOR_SET] = "update_operator_set",
+	[FEATURE_UPDATE_OPERATOR_SET_ON_INSERT] = "update_operator_set_on_insert",
+	[FEATURE_UPDATE_OPERATOR_UNSET] = "update_operator_unset",
 
 	/* Feature usage stats */
 	[FEATURE_USAGE_TTL_PURGER_CALLS] = "ttl_purger_calls",

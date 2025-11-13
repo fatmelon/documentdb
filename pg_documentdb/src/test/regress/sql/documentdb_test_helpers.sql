@@ -1,6 +1,7 @@
-CREATE SCHEMA documentdb_test_helpers;
+CREATE SCHEMA IF NOT EXISTS documentdb_test_helpers;
 
-SELECT datname, datcollate, datctype, pg_encoding_to_char(encoding), datlocprovider FROM pg_database;
+SELECT MIN(datcollate), MIN(datctype), MIN(pg_encoding_to_char(encoding)), MIN(datlocprovider) FROM pg_database;
+SELECT MAX(datcollate), MAX(datctype), MAX(pg_encoding_to_char(encoding)), MAX(datlocprovider) FROM pg_database;
 
 -- binary version should return the installed version after recreating the extension
 SELECT documentdb_api.binary_version() = (SELECT REPLACE(extversion, '-', '.') FROM pg_extension where extname = 'documentdb_core');
@@ -41,6 +42,10 @@ BEGIN
   LOOP
     IF v_explain_row ~ '^\s+Disabled: true\s*$' THEN
       CONTINUE;
+    ELSIF v_explain_row ~ '^\s+Index Searches: [0-9]+\s*$' THEN
+      CONTINUE;
+    ELSIF v_explain_row ~ 'actual rows=[0-9]+\.00' THEN
+      SELECT regexp_replace(v_explain_row, 'actual rows=([0-9]+)\.00', 'actual rows=\1') INTO v_explain_row;
     END IF;
     RETURN NEXT v_explain_row;
   END LOOP;
@@ -61,7 +66,7 @@ AS $$
 BEGIN
   RETURN QUERY
   SELECT ci.collection_id, ci.index_id,
-         documentdb_api_internal.index_spec_as_bson(ci.index_spec),
+         documentdb_api_internal.index_spec_as_bson(ci.index_spec, for_get_indexes=>true),
          ci.index_is_valid
   FROM documentdb_api_catalog.collection_indexes AS ci
   WHERE ci.collection_id = (SELECT hc.collection_id FROM documentdb_api_catalog.collections AS hc
@@ -95,7 +100,7 @@ $$ LANGUAGE plpgsql;
 
 -- Returns the command (without "CONCURRENTLY" option) used to create given
 -- index on a collection.
-CREATE FUNCTION documentdb_test_helpers.documentdb_index_get_pg_def(
+CREATE OR REPLACE FUNCTION documentdb_test_helpers.documentdb_index_get_pg_def(
     p_database_name text,
     p_collection_name text,
     p_index_name text)
