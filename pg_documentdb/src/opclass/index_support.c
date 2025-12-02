@@ -224,9 +224,6 @@ static bool PushTextQueryToRuntime(PlannerInfo *root, RelOptInfo *rel,
 static void ThrowNoTextIndexFound(void);
 static void ThrowNoVectorIndexFound(void);
 
-static IndexPath * TrimIndexRestrictInfoForBtreePath(PlannerInfo *root,
-													 IndexPath *indexPath,
-													 bool *hasNonIdClauses);
 static bool MatchIndexPathEquals(IndexPath *path, void *matchContext);
 static bool EnableGeoNearForceIndexPushdown(PlannerInfo *root,
 											ReplaceExtensionFunctionContext *context);
@@ -326,6 +323,7 @@ extern bool ForceIndexOnlyScanIfAvailable;
 extern bool EnableIdIndexCustomCostFunction;
 extern bool EnableIndexOnlyScan;
 extern bool EnableOrderByIdOnCostFunction;
+extern bool EnablePrimaryKeyCursorScan;
 
 /* --------------------------------------------------------- */
 /* Top level exports */
@@ -611,7 +609,7 @@ OpExprForAggregationStageSupportFunction(Node *supportRequest)
  * WHERE shard_key_value = 'collectionId'
  * and is an unsharded equality operator.
  */
-inline static bool
+bool
 IsOpExprShardKeyForUnshardedCollections(Expr *expr, uint64 collectionId)
 {
 	if (!IsA(expr, OpExpr))
@@ -1151,6 +1149,12 @@ ReplaceExtensionFunctionOperatorsInRestrictionPaths(List *restrictInfo,
 			IsOpExprShardKeyForUnshardedCollections(rinfo->clause,
 													context->inputData.collectionId))
 		{
+			if (EnablePrimaryKeyCursorScan && context->hasStreamingContinuationScan)
+			{
+				/* Don't trim the shard key qual here - wait until the continuation is formed */
+				continue;
+			}
+
 			/* Simplify expression:
 			 * On unsharded collections, we need the shard_key_value
 			 * filter to route to the appropriate shard. However
@@ -2920,7 +2924,7 @@ OptimizeIndexExpressionsForRange(List *indexClauses)
 }
 
 
-static IndexPath *
+IndexPath *
 TrimIndexRestrictInfoForBtreePath(PlannerInfo *root, IndexPath *indexPath,
 								  bool *hasNonIdClauses)
 {

@@ -100,6 +100,9 @@ bool EnableIdIndexCustomCostFunction = DEFAULT_ENABLE_ID_INDEX_CUSTOM_COST_FUNCT
 #define DEFAULT_ENABLE_ORDER_BY_ID_ON_COST false
 bool EnableOrderByIdOnCostFunction = DEFAULT_ENABLE_ORDER_BY_ID_ON_COST;
 
+#define DEFAULT_ENABLE_COMPOSITE_PARALLEL_INDEX_SCAN false
+bool EnableCompositeParallelIndexScan = DEFAULT_ENABLE_COMPOSITE_PARALLEL_INDEX_SCAN;
+
 /* Note: this is a long term feature flag since we need to validate compatiblity
  * in mixed mode for older indexes - once this is
  * enabled by default - please move this to testing_configs.
@@ -188,6 +191,12 @@ bool ForceCollStatsDataCollection = DEFAULT_FORCE_COLL_STATS_DATA_COLLECTION;
 /* Remove after 110 */
 #define DEFAULT_ENABLE_ID_INDEX_PUSHDOWN true
 bool EnableIdIndexPushdown = DEFAULT_ENABLE_ID_INDEX_PUSHDOWN;
+
+/* Remove after 111*/
+#define DEFAULT_USE_LOOKUP_NEW_PROJECT_INLINE_METHOD true
+bool EnableUseLookupNewProjectInlineMethod = DEFAULT_USE_LOOKUP_NEW_PROJECT_INLINE_METHOD;
+#define DEFAULT_USE_FOREIGN_KEY_LOOKUP_INLINE true
+bool EnableUseForeignKeyLookupInline = DEFAULT_USE_FOREIGN_KEY_LOOKUP_INLINE;
 
 
 /*
@@ -656,6 +665,14 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
+		psprintf("%s.enableCompositeParallelIndexScan", newGucPrefix),
+		gettext_noop(
+			"Whether to enable parallel index scans for composite indexes."),
+		NULL, &EnableCompositeParallelIndexScan,
+		DEFAULT_ENABLE_COMPOSITE_PARALLEL_INDEX_SCAN,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
 		psprintf("%s.enableValueOnlyIndexTerms", newGucPrefix),
 		gettext_noop(
 			"Whether to enable index terms that are value only."),
@@ -705,5 +722,21 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 			"Whether to enable new unique hash equality implementation."),
 		NULL, &EnableCompositeUniqueHash,
 		DEFAULT_ENABLE_COMPOSITE_UNIQUE_HASH,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableUseLookupNewProjectInlineMethod", newGucPrefix),
+		gettext_noop(
+			"Whether to use new inline method for $project in $lookup."),
+		NULL, &EnableUseLookupNewProjectInlineMethod,
+		DEFAULT_USE_LOOKUP_NEW_PROJECT_INLINE_METHOD,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableUseForeignKeyLookupInline", newGucPrefix),
+		gettext_noop(
+			"Whether to use foreign key for lookup inline method."),
+		NULL, &EnableUseForeignKeyLookupInline,
+		DEFAULT_USE_FOREIGN_KEY_LOOKUP_INLINE,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 }

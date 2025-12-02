@@ -149,6 +149,11 @@ void ConsiderIndexOrderByPushdownForId(PlannerInfo *root, RelOptInfo *rel,
 									   ReplaceExtensionFunctionContext *context);
 void ConsiderIndexOnlyScan(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte,
 						   Index rti, ReplaceExtensionFunctionContext *context);
+bool IsOpExprShardKeyForUnshardedCollections(Expr *expr, uint64 collectionId);
+
+IndexPath * TrimIndexRestrictInfoForBtreePath(PlannerInfo *root,
+											  IndexPath *indexPath,
+											  bool *hasNonIdClauses);
 
 void WalkPathsForIndexOperations(List *pathsList,
 								 ReplaceExtensionFunctionContext *context);
